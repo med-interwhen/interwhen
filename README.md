@@ -22,14 +22,12 @@
 
 interwhen is a test-time verification framework for language models that enforces correctness with respect to a set of verifiers. It is designed to improve *instance*-level reliability in reasoning systems, particularly in high-stakes domains where occasional errors are unacceptable. 
 
-This is especially important for agentic workflows, where models make sequences of decisions interleaved with tool calls, database writes, or external API actions. In these settings, verifying only the final answer can miss early policy violations or irreversible mistakes. interwhen instead enables LLM-Process-Modulo execution: the model is steered during the reasoning or action process so that its trace remains compliant with task-specific policies
-
-The framework has two parts. Offline, interwhen can synthesize code-based verifiers from natural-language policy documents, including provably correct verifiers in Lean or Z3. Online, interwhen periodically polls the
-reasoning trace and forks inference of the reasoning model to recover intermediate states. Verifiers are run
-asynchronously alongside generation, adding negligible overhead on correct executions and intervening only
-when violations occur. 
+This is especially important for agentic workflows, where models make sequences of decisions interleaved with tool calls, database writes, or external API actions. In these settings, verifying only the final answer can miss early policy violations or irreversible mistakes. interwhen instead enables LLM-Process-Modulo execution: the model is steered during the reasoning or action process so that its trace remains compliant with task-specific policies.
 
 interwhen addresses the problem by providing a plug-and-play mechanism to improve instance-level reliability of any language model, which we call *verifier-guided reasoning*. Instead of verifying only the final output, the framework enables verification of intermediate reasoning traces during generation. When a violation is detected, the system can steer, revise, or halt generation. If no output is produced, the system abstains; if an output is produced, it satisfies the specified verifiers.
+
+The framework has two parts. **Offline**, interwhen can synthesize code-based verifiers from natural-language policy documents, including provably correct verifiers in Lean or Z3. **Online**, interwhen periodically polls the
+reasoning trace and forks inference of the reasoning model to recover intermediate states. Verifiers are run asynchronously alongside generation, adding negligible overhead on correct executions and intervening only when violations occur. 
 
 From a research perspective, interwhen makes the following contributions:
 
