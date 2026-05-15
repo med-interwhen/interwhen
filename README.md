@@ -87,7 +87,7 @@ A demo on the ZebraLogic dataset. The task is to find the correct assignments gi
 ## Key Features
 interwhen changes the inference pipeline of a language model by creating an auxiliary Monitor that runs alongside the main model and interacts with the model’s output to improve its quality. The Monitor agent reads the output of a language model in real time and calls necessary verifiers to check its validity. 
 
-1. **Policy Compliant Agentic Reasoning** 
+1. **Policy Compliant Agentic Reasoning**. 
 interwhen verifies intermediate reasoning states, tool-use decisions, and tool-responses before the model reaches a final answer, with the aim of ensuring that the actions taken by the agent are compliant with the policy provided. This is useful for agentic workflows where early mistakes can propagate into irreversible tool calls or invalid task outcomes, and hence process verification is essential.
 
 
