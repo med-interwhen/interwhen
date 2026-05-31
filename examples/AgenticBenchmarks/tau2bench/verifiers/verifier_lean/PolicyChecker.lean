@@ -780,15 +780,6 @@ def feedback_result_dataUsage_exceeded : String :=
 /-! #### D.POST.2  `get_details_by_id` (Line) + `Hyp.travelling`
         → roaming flag must be on while travelling
 
-Rubric:
-* Q1 ✓  JSON with a Bool field `roaming_enabled`.
-* Q2 ✓  Cross-source: parsed Bool conjoined with SLM-derived
-        `Hyp.travelling` (an explicitly-allowed pre-cooked input).
-* Q3 ✓  Spec is `¬ (roaming_enabled = false ∧ travelling = true)`,
-        a typed Bool relation — not a substring test.
-* Q4 ✓  `_iff` composes by case-split on `parseJsonBool` and on the
-        hypothesis Bool; no `decide` on a precomputed input.
-
 Workflow §2.1.2 / Policy §"Data Roaming": when the user is travelling
 and the line is not roaming-enabled, the agent must call
 `enable_roaming()` (at no cost). -/
@@ -829,15 +820,6 @@ def feedback_result_lineRoamingDisabled : String :=
 
 /-! #### D.POST.3  `get_details_by_id` (Line) → phone number agrees with state
 
-Rubric:
-* Q1 ✓  JSON string field `phone_number`.
-* Q2(d) ✓  Cross-state: parsed value compared to `s.userPhone` from
-        `AgentState`, not against a Python-precomputed Bool.
-* Q3 ✓  Spec is a string equality between parsed value and stored
-        state — typed Lean comparison.
-* Q4 ✓  `_iff` composes by case-split on `parseJsonString` and
-        `String.decEq`.
-
 Policy §"Customer Lookup" identification rule (cross-check phone): if
 the agent looked up a line and the line's phone number disagrees with
 the user-supplied phone, identification is suspect. -/
@@ -876,16 +858,6 @@ def feedback_result_linePhoneMatchesState : String :=
   "get_details_by_id returned a `phone_number` that does not match the user-supplied phone in state — re-verify customer identity before acting on this line (policy §\"Customer Lookup\")."
 
 /-! #### D.POST.4  `check_app_permissions` (messaging) → storage AND sms granted
-
-Rubric:
-* Q1 ✓  Fixed-prefix output `App '<name>' has permission for: p1, p2, ….`
-        is parseable as a comma-separated list with one schema.
-* Q2(b) ✓  Set/list membership over typed `List String`, combining two
-        independent membership constraints.
-* Q3 ✓  Spec is `"storage" ∈ perms ∧ "sms" ∈ perms` — typed list
-        membership, not a substring scan.
-* Q4 ✓  `_iff` composes by case-split on `parseCommaList` and the
-        decidable `List.elem` for `String`.
 
 Workflow §3.5 / manual §"Messaging App Lacks Necessary Permissions". -/
 
