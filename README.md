@@ -1,7 +1,7 @@
 <h1 align="center">interwhen</h1>
 
 <p align="center">
-   A Generalizable Framework for Verifiable Reasoning with Test-time Monitors
+   A Generalizable Framework for Steering Reasoning Models with  Test-time Verification
 </p>
 
 <p align="center">
@@ -16,25 +16,39 @@
   <a href="https://arxiv.org/abs/2602.11202"><b>Paper</b></a> &nbsp;|&nbsp;
   <a href="#installation"><b>Quick Start</b></a> &nbsp;|&nbsp;
   <a href="#examples"><b>Examples</b></a> &nbsp;|&nbsp;
-  <a href="#available-monitors"><b>Monitors</b></a> &nbsp;|&nbsp;
+  <a href="#available-monitors-and-verifiers"><b>Monitors</b></a> &nbsp;|&nbsp;
   <a href="#creating-custom-verifiers-and-monitors"><b>Create your own Monitors</b></a>
 </p>
 
-interwhen is a test-time verification framework for language models that enforces correctness with respect to a set of verifiers. It is designed to improve *instance*-level reliability in reasoning systems, particularly in high-stakes domains where occasional errors are unacceptable.
+interwhen is a test-time verification framework for language models that enforces correctness with respect to a set of verifiers. It is designed to improve *instance*-level reliability in reasoning systems, particularly in high-stakes domains where occasional errors are unacceptable. 
 
-While modern language models achieve high average performance, aggregate metrics obscure a critical limitation: even highly accurate systems may fail on individual instances. Such failures erode trust and limit deployment, while in domains such as law, healthcare and robotics, they undermine safety and can cause real harm. Ensuring correctness at the level of a single query remains an open challenge, especially in settings where formal task structure is limited or absent.
+This is especially important for agentic workflows, where models make sequences of decisions interleaved with tool calls, database writes, or external API actions. In these settings, verifying only the final answer can miss early policy violations or irreversible mistakes. interwhen instead enables LLM-Process-Modulo execution: the model is steered during the reasoning or action process so that its trace remains compliant with task-specific policies.
 
 interwhen addresses the problem by providing a plug-and-play mechanism to improve instance-level reliability of any language model, which we call *verifier-guided reasoning*. Instead of verifying only the final output, the framework enables verification of intermediate reasoning traces during generation. When a violation is detected, the system can steer, revise, or halt generation. If no output is produced, the system abstains; if an output is produced, it satisfies the specified verifiers.
 
-From a research perspective, interwhen makes two contributions:
+The framework has two parts. **Offline**, interwhen can synthesize code-based verifiers from natural-language policy documents, including provably correct verifiers in Lean or Z3. **Online**, interwhen periodically polls the
+reasoning trace and forks inference of the reasoning model to recover intermediate states. Verifiers are run asynchronously alongside generation, adding negligible overhead on correct executions and intervening only when violations occur. 
+
+From a research perspective, interwhen makes the following contributions:
 
 - **A New Axis for Test-Time Scaling** — Introduces verifier compute as an additional dimension of scaling at inference time. Rather than scaling model size or sampling alone, performance can be improved by allocating compute to structured verification.
+
+- **Automatic Verifier Synthesis** — Provides a method for generating verifiers automatically from a given natural-language policy. We also propose a Lean-based variant that produces formal specifications, corresponding verifiers, and machine checked proofs of soundness and completeness of the verifiers. 
 
 - **A Testbed for Verifier Development** — Enables systematic evaluation of verifier designs at inference time before incorporating them into training objectives (e.g., as reward models or critics).
 
 A detailed discussion of interwhen, including how it was developed and tested, can be found in our [paper](https://arxiv.org/abs/2602.11202).
 
 <table>
+<tr>
+<td align="center" colspan="2">
+
+<img src="https://github.com/user-attachments/assets/41496b82-bdfd-4e07-8871-3fd9dfc46105" alt="Agentic policy compliance demo" height="400" /></a>
+<br>
+A demo on the Telecom domain in Tau2-Bench, operating in solo mode. The verifiers are first generated from the rules defined in the policy. As the agent's execution progresses, each tool call is checked against the applicable policy verifiers, with feedback returned when a violation is detected. The demo shows how interwhen steers the same trajectory toward policy-compliant execution without restarting the agent.
+
+</td>
+</tr>
 <tr>
 <td align="center">
 
@@ -53,13 +67,15 @@ A demo on the ZebraLogic dataset. The task is to find the correct assignments gi
 </tr>
 </table>
 
+
+
 ## Table of Contents
 
 - [Key Features](#key-features)
 - [Installation](#installation)
 - [Verifiable Reasoning in Three Lines](#verifiable-reasoning-in-three-lines)
 - [Examples](#examples)
-- [Available Monitors](#available-monitors)
+- [Available Monitors](#available-monitors-and-verifiers)
 - [Creating Custom Verifiers and Monitors](#creating-custom-verifiers-and-monitors)
 - [How It Works](#how-it-works)
 - [Evaluation](#evaluation)
@@ -71,17 +87,21 @@ A demo on the ZebraLogic dataset. The task is to find the correct assignments gi
 ## Key Features
 interwhen changes the inference pipeline of a language model by creating an auxiliary Monitor that runs alongside the main model and interacts with the model’s output to improve its quality. The Monitor agent reads the output of a language model in real time and calls necessary verifiers to check its validity. 
 
-1. **Verification During Generation**. interwhen verifies reasoning traces as they are produced, without requiring external step extraction or structured decomposition. This allows the model to retain flexible reasoning strategies while remaining subject to correctness constraints.
+1. **Policy Compliant Agentic Reasoning**. 
+interwhen verifies intermediate reasoning states, tool-use decisions, and tool-responses before the model reaches a final answer, with the aim of ensuring that the actions taken by the agent are compliant with the policy provided. This is useful for agentic workflows where early mistakes can propagate into irreversible tool calls or invalid task outcomes, and hence process verification is essential.
 
-2. **Asynchronous and Efficient Execution**. Verifiers are executed asynchronously and intervene only when violations are detected, minimizing inference overhead while preserving responsiveness.
 
-3. **Unified Model–Verifier Interface**. The framework provides a general API for interaction between language models and different kind of verifiers. Based on the objectivity of a domain, verifiers can be symbolic, neuro-symbolic or even fully neural verifiers. They can operate on partial outputs,  final answers, or both. 
+2. **Verification During Generation**. interwhen verifies reasoning traces as they are produced, without requiring external step extraction or structured decomposition. This allows the model to retain flexible reasoning strategies while remaining subject to correctness constraints.
+
+3. **Asynchronous and Efficient Execution**. Verifiers are executed asynchronously and intervene only when violations are detected, minimizing inference overhead while preserving responsiveness.
+
+4. **Unified Model–Verifier Interface**. The framework provides a general API for interaction between language models and different kind of verifiers. Based on the objectivity of a domain, verifiers can be symbolic, neuro-symbolic or even fully neural verifiers. They can operate on partial outputs,  final answers, or both. 
 
 ----------------
 
 At a conceptual level, interwhen reframes reliability in language models:
 
-> Instead of asking whether a model is accurate on average, we ask whether a particular output satisfies explicit, verifiable constraints.
+> Instead of asking whether a model is accurate on average, we ask whether a particular output complies with explicit, verifiable constraints derived from a natural language policy.
 
 By integrating verification directly into generation, interwhen provides a general mechanism for improving the soundness of reasoning systems without restricting model expressivity or requiring retraining.
 
@@ -188,23 +208,25 @@ You can create your own custom monitors by subclassing `VerifyMonitor` in `inter
 
 ## How It Works
 
-![diagram](https://github.com/user-attachments/assets/a0efa3a6-9d12-44ac-8017-63ed2bffaac6)
+![diagram](https://github.com/user-attachments/assets/8c9e2992-2fa4-49de-bab5-2c36d47fb05c)
 
-interwhen operates by interleaving verification with generation. The framework consists of two components running in parallel: a **target LLM** that generates reasoning traces, and one or more **monitors** that watch the output stream and verify intermediate steps in real time.
+interwhen implements **LLM-Process-Modulo**: instead of verifying only the final answer, it monitors a single reasoning or agentic trajectory as it unfolds and checks whether intermediate states satisfy a task policy. The framework is built around two operations: extracting verifiable states from a partial trace, and running policy verifiers on those states.
 
-The process works as follows:
+Given a new task domain, interwhen operates in two phases.
 
-1. **Streaming generation.** The target LLM generates tokens in a streaming fashion. The output is forwarded to all active monitors as it is produced, in an asynchronous fashion.
+1. **Offline policy formalization.** A natural-language policy document is treated as a set of rules. For agentic domains, this policy may be an operational rulebook, such as a telecom or retail agent policy, optionally paired with a description of the available tools. interwhen uses a frontier LLM to generate code-based verifiers for the policy rules and a mapping from state patterns to the verifiers that should be invoked. For domains requiring stronger guarantees, interwhen can generate Lean specifications, verifier implementations, and machine-checked proofs that the verifier code is sound and complete with respect to the formalized rule.
 
-2. **Step detection.** Each monitor runs a *step extractor* that identifies meaningful reasoning steps in the stream (e.g., a proposed move in a maze, an arithmetic operation in Game of 24, or a code block in Verina). The definition of a "step" is monitor-specific and configurable.
+2. **Streaming generation.** At inference time, the target model generates a single reasoning trace. This trace may contain chain-of-thought tokens, tool calls, tool outputs, intermediate answers, and a final response. interwhen does not require the model to follow a rigid step-by-step template. Instead, it uses lightweight boundaries, such as paragraph breaks, reflection tokens, or tool-call events, to decide when the current partial trace should be checked.
 
-3. **Verification.** When a step is detected, the monitor invokes its verifier — which can be symbolic (e.g., a Z3 constraint solver), tool-based (e.g., a Lean4 compiler), or neural (e.g., an auxiliary LLM) — to check whether the step is valid.
+3. **State extraction.** At each boundary, interwhen extracts the variables needed by the relevant verifiers from the partial trace. These variables may include tool names, tool arguments, database fields, proposed actions, intermediate formulas, next game moves, or partial answers. In structured agentic settings, some states can be parsed directly from tool calls. In less structured reasoning traces, interwhen forks the model execution and prompts the model itself to extract the required state variables into a dictionary.
 
-4. **Intervention.** If the verifier detects an error, the monitor injects corrective feedback directly into the generation stream. This steers the target LLM to revise its reasoning without restarting from scratch. If the step is valid, generation continues uninterrupted.
+4. **Asynchronous verification.** Once state variables are available, interwhen invokes the applicable verifiers. A verifier may return `True`, `False`, or `Unknown`: `True` means the state satisfies the policy rule, `False` means a violation was detected, and `Unknown` means the verifier does not yet have enough information to decide. Verification runs asynchronously alongside generation, so correct executions are not forced to wait for every check to complete.
 
-5. **Termination.** Generation ends when the model produces a final answer, a maximum token limit is reached, or an early stopping monitor determines the model has converged (e.g., the same answer has appeared *k* times in a row).
+5. **Intervention.** If a verifier returns `False`, it also returns text feedback explaining the violation. interwhen interrupts the main generation, rolls the trace back to the checked point, appends the verifier feedback, and resumes generation from there. In agentic settings, feedback can be provided as a tool response or as part of the model’s reasoning context. For write-like tool calls, verification can be made blocking so invalid irreversible actions are stopped before execution.
 
-This loop — *generate, extract, verify, intervene* — repeats throughout the reasoning process. Because verification is asynchronous, it adds minimal latency when steps are correct, and only intervenes when necessary. The result is an output that is not just plausible, but verified against explicit correctness constraints.
+6. **Termination or abstention.** This extract, verify, and intervene loop continues until the model produces a final answer, reaches a token limit, or exceeds the allowed number of correction attempts. If the retry limit is exceeded, interwhen abstains rather than returning an answer that violates the specified verifiers.
+
+This design lets interwhen steer reasoning and tool-using agents without finetuning, branch search, or repeated full retries. The main model follows one trajectory, while verifiers run in parallel and intervene only when the trace becomes non-compliant.
 
 ## Intended Uses
 - interwhen was developed to improve the quality of a reasoning model’s outputs without requiring finetuning.
