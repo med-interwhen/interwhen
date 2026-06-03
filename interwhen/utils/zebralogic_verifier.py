@@ -75,30 +75,32 @@ class ZebraLogicProblem:
             same_house: Two entities at same position
             pos_relation: Spatial relationship between entities
         """
+        def _norm(s):
+            return s.lower() if isinstance(s, str) else s
 
         t = ir["type"]
 
         if t == "place":
-            f, v = ir["entity"]
+            f, v = _norm(ir["entity"][0]), _norm(ir["entity"][1])
             h = ir["pos"] - 1  # Convert 1-indexed to 0-indexed
             return self.features[f][v][h]
 
         if t == "not_place":
-            f, v = ir["entity"]
+            f, v = _norm(ir["entity"][0]), _norm(ir["entity"][1])
             h = ir["pos"] - 1
             return Not(self.features[f][v][h])
 
         if t == "same_house":
-            (f1, v1) = ir["A"]
-            (f2, v2) = ir["B"]
+            f1, v1 = _norm(ir["A"][0]), _norm(ir["A"][1])
+            f2, v2 = _norm(ir["B"][0]), _norm(ir["B"][1])
             return And(*[
                 self.features[f1][v1][h] == self.features[f2][v2][h]
                 for h in self.houses
             ])
 
         if t == "pos_relation":
-            (f1, v1) = ir["A"]
-            (f2, v2) = ir["B"]
+            f1, v1 = _norm(ir["A"][0]), _norm(ir["A"][1])
+            f2, v2 = _norm(ir["B"][0]), _norm(ir["B"][1])
             direction = ir["direction"]
             dist = ir["dist"]
 

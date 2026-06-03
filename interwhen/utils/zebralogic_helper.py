@@ -277,7 +277,7 @@ def zebra_correctness(problem: dict, candidate_solution: dict) -> Tuple[int, int
                 s += 1
                 continue
             t_soln += 1
-            if candidate_solution[house][fname] == solution[house][fname]:
+            if candidate_solution[house][fname].lower() == solution[house][fname].lower():
                 c += 1
 
     m = t - t_soln
