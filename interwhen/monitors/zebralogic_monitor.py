@@ -32,6 +32,8 @@ class ZebraLogicMonitor(VerifyMonitor):
         tokenizer: PreTrainedTokenizerBase,
         step_token: str,
         step_interval: int,
+        open_think: str = "<think>",
+        close_think: str = "</think>",
         port: int = 8000,
         max_corrections: int = 50,
         async_execution: bool = True,
@@ -42,6 +44,8 @@ class ZebraLogicMonitor(VerifyMonitor):
         self.llm = llm
         self.tokenizer = tokenizer
         self.step_token = step_token
+        self.OPEN_THINK = open_think
+        self.CLOSE_THINK = close_think
         self.step_interval = step_interval
         self.max_corrections = max_corrections
         self.async_execution = async_execution
@@ -139,8 +143,8 @@ class ZebraLogicMonitor(VerifyMonitor):
         Returns:
             (trigger_flag, text_to_verify) - text_to_verify is the full generated text.
         """
-        last_open_think = generated_text.rfind('<think>')
-        last_close_think = generated_text.rfind('</think>')
+        last_open_think = generated_text.rfind(self.OPEN_THINK)
+        last_close_think = generated_text.rfind(self.CLOSE_THINK)
         if last_close_think != -1 and last_close_think > last_open_think: # we are outside of a think block
             return False, None
         
@@ -171,7 +175,7 @@ class ZebraLogicMonitor(VerifyMonitor):
             return
 
         # Append state extraction suffix to elicit state JSON from the LLM
-        suffix = "\nOk let me note down the current partial assignments that I'm sure of, for reference.</think>\n```json\n{\n\"House "
+        suffix = f"\nOk let me note down the current partial assignments that I'm sure of, for reference.{self.CLOSE_THINK}\n```json\n{{\n\"House "
         input = self.system_prompt + chunk + suffix
         
         # fail silently if LLM call or JSON parsing fails, to avoid blocking the main generation loop

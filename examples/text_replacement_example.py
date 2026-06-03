@@ -3,6 +3,7 @@ import logging
 from transformers import AutoTokenizer
 from interwhen.monitors import SimpleTextReplaceMonitor
 from interwhen import stream_completion
+from interwhen.utils.llm import get_think_tags
 
 logger = logging.getLogger(__name__)
 
@@ -31,6 +32,7 @@ if __name__ == "__main__":
         force=True  # Override any existing configuration
     )
     model_name = "Qwen/Qwen3-30B-A3B-Thinking-2507"
+    think_tags = get_think_tags(model_name)
     llm_server = init_llm_server(model_name)
     tokenizer = AutoTokenizer.from_pretrained(model_name)
     # prepare the model input
@@ -47,7 +49,7 @@ if __name__ == "__main__":
     result = asyncio.run(stream_completion(
         text,
         llm_server=llm_server,
-        monitors=(SimpleTextReplaceMonitor("IsCheck", "</think>", async_execution=True),),
+        monitors=(SimpleTextReplaceMonitor("IsCheck", think_tags['close'], async_execution=True),),
         add_delay=False,
         termination_requires_validation=False,
         async_execution=True

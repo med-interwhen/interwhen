@@ -239,26 +239,28 @@ def strip_function_definition(code: str) -> str:
     return code
 
 
-def extract_code_from_response(response: str) -> str:
+def extract_code_from_response(response: str, open_think: str = "<think>", close_think: str = "</think>") -> str:
     """Extract code from the LAST [CODE]...[/CODE] tags or lean code blocks.
     
     Handles cases where:
-    1. Response has <think>...</think> reasoning block
+    1. Response has a think reasoning block (open_think...close_think)
     2. [CODE] tag exists but [/CODE] may be missing (truncated response)
     3. Code is in markdown lean blocks
     4. Model outputs [CORE] or other variants instead of [CODE]
     5. Model uses mismatched tags like [CORE]...[/CODE]
     6. Model includes full function definition instead of just the body
     """
-    # Step 1: Remove <think>...</think> block entirely (case insensitive)
+    # Step 1: Remove the think block entirely (case insensitive)
     # This prevents extracting reasoning text as code
-    cleaned = re.sub(r'<think>.*?</think>', '', response, flags=re.DOTALL | re.IGNORECASE)
+    open_pattern = re.escape(open_think)
+    close_pattern = re.escape(close_think)
+    cleaned = re.sub(f'{open_pattern}.*?{close_pattern}', '', response, flags=re.DOTALL | re.IGNORECASE)
     
-    # If </think> exists but <think> doesn't match (partial), take everything after </think>
+    # If close_think exists but open_think doesn't match (partial), take everything after close_think
     if not cleaned.strip() or cleaned.strip() == response.strip():
-        think_end = response.lower().rfind("</think>")
+        think_end = response.lower().rfind(close_think.lower())
         if think_end != -1:
-            cleaned = response[think_end + len("</think>"):]
+            cleaned = response[think_end + len(close_think):]
     
     extracted_code = None
     
@@ -589,7 +591,7 @@ def make_aux_reducible(aux: str) -> str:
 
 
 
-def extract_spec_from_response(response: str) -> Dict[str, str]:
+def extract_spec_from_response(response: str, open_think: str = "<think>", close_think: str = "</think>") -> Dict[str, str]:
     """Extract precondition and postcondition from response.
     
     Returns dict with keys: precond, postcond, precond_aux, postcond_aux
@@ -601,14 +603,16 @@ def extract_spec_from_response(response: str) -> Dict[str, str]:
         "postcond_aux": "",
     }
     
-    # Remove <think>...</think> block
-    cleaned = re.sub(r'<think>.*?</think>', '', response, flags=re.DOTALL | re.IGNORECASE)
+    # Remove the think block
+    open_pattern = re.escape(open_think)
+    close_pattern = re.escape(close_think)
+    cleaned = re.sub(f'{open_pattern}.*?{close_pattern}', '', response, flags=re.DOTALL | re.IGNORECASE)
     
-    # Handle partial </think>
+    # Handle partial close_think
     if not cleaned.strip() or cleaned.strip() == response.strip():
-        think_end = response.lower().rfind("</think>")
+        think_end = response.lower().rfind(close_think.lower())
         if think_end != -1:
-            cleaned = response[think_end + len("</think>"):]
+            cleaned = response[think_end + len(close_think):]
     
     # Extract PRECOND_AUX (take last match to get the most recent/corrected version)
     precond_aux_matches = re.findall(r'\[PRECOND_AUX\](.*?)\[/PRECOND_AUX\]', cleaned, re.DOTALL | re.IGNORECASE)

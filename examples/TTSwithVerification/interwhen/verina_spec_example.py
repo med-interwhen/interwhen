@@ -29,6 +29,7 @@ from typing import List, Tuple, Optional, Dict, Any
 
 from interwhen.interject import stream_completion
 from interwhen.monitors import EATMonitor, StepVerifierVerinaSpecMonitor
+from interwhen.utils.llm import get_think_tags
 from interwhen.utils.verina_spec_example_utils import *
 
 logger = logging.getLogger(__name__)
@@ -231,6 +232,7 @@ if __name__ == "__main__":
     
     main_model = args.main_model
     earlystop_model = args.earlystop_model
+    think_tags = get_think_tags(main_model)
     
     output_dirs = get_output_dirs(main_model)
     logfile = get_log_filename(main_model, args.num_examples)
@@ -304,6 +306,8 @@ if __name__ == "__main__":
                     k_steps=args.k_steps,
                     compile_timeout=120,
                     max_corrections=args.max_corrections,
+                    open_think=think_tags['open'],
+                    close_think=think_tags['close'],
                 ),
             ]
         else:
@@ -352,7 +356,7 @@ if __name__ == "__main__":
         
         save_reasoning_trace(idx, data.data_id, prompt_with_answer, reason_dir)
     
-        generated_spec = extract_spec_from_response(answer)
+        generated_spec = extract_spec_from_response(answer, think_tags['open'], think_tags['close'])
         
         # Extract generated spec
         logger.info(f"Extracted precond: {generated_spec['precond'][:100]}...")

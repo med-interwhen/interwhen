@@ -12,6 +12,7 @@ from transformers import AutoTokenizer
 
 from interwhen import stream_completion
 from interwhen.monitors import SimpleTextReplaceMonitor, KstableAnswerGame24Monitor, EATMonitor, DEERMonitor
+from interwhen.utils.llm import get_think_tags
 
 # ============== MODEL CONFIGURATION ==============
 # Change these model names to scale experiments easily
@@ -112,15 +113,15 @@ def count_tokens(text, tokenizer):
     return len(tokens)
 
 
-def extract_solution(text):
+def extract_solution(text, open_think="<think>", close_think="</think>"):
     
-    # Only search for \boxed{} AFTER </think> to avoid grabbing unverified
+    # Only search for \boxed{} AFTER the think-close tag to avoid grabbing unverified
     # expressions from inside the thinking trace.
-    # If model opened <think> but never closed it (hit token limit), there is
+    # If model opened the think tag but never closed it (hit token limit), there is
     # no final answer — return None.
-    if '</think>' in text:
-        search_text = text[text.rfind('</think>'):]
-    elif '<think>' in text:
+    if close_think in text:
+        search_text = text[text.rfind(close_think):]
+    elif open_think in text:
         # Model started thinking but never finished — no verified answer
         return None
     else:
@@ -208,7 +209,7 @@ def evaluate_expression(expr, expected_nums=None):
     except Exception:
         return False
 
-def evaluate_game24_answer(answer, nums):
+def evaluate_game24_answer(answer, nums, open_think="<think>", close_think="</think>"):
     """
     Evaluate a Game24 answer and return (is_correct, expr, error_message).
     
@@ -219,7 +220,7 @@ def evaluate_game24_answer(answer, nums):
     Returns:
         Tuple of (is_correct, extracted_expression, error_message)
     """
-    expr = extract_solution(answer)
+    expr = extract_solution(answer, open_think, close_think)
     
     if not expr:
         return False, None, "No expression found"
@@ -248,6 +249,7 @@ if __name__ == "__main__":
     # Use models from args (allows command-line override)
     main_model = args.main_model
     earlystop_model = args.earlystop_model
+    think_tags = get_think_tags(main_model)
 
     # Setup output directories based on model name
     output_dirs = get_output_dirs(main_model)
@@ -301,7 +303,7 @@ if __name__ == "__main__":
                 name="game24_kstable",
                 k=2,
                 expected_nums=nums,  # Validate equations use exactly these numbers
-                answer_start_token="</think>"
+                answer_start_token=think_tags['close']
             ),)
             # monitors = (
             #     EATMonitor(
@@ -336,8 +338,14 @@ if __name__ == "__main__":
         #     "to reach the conclusion. Now, try to solve the following question through the above guidelines."
         # )
 
+        full_prompt = tokenizer.apply_chat_template(
+            [{"role": "user", "content": prompt}],
+            tokenize=False,
+            add_generation_prompt=True,
+            enable_thinking=True,
+        )
         answer = asyncio.run(stream_completion(
-            f"<|im_start|>user\n{prompt}<|im_end|>\n<|im_start|>assistant\n",
+            full_prompt,
             llm_server=llm_server,
             monitors=monitors,
             add_delay=False,
@@ -354,7 +362,7 @@ if __name__ == "__main__":
         logger.info(f"Generated tokens in this example: {generated_tokens}")
 
         # Evaluate the answer
-        is_correct, expr, message = evaluate_game24_answer(answer, nums)
+        is_correct, expr, message = evaluate_game24_answer(answer, nums, think_tags['open'], think_tags['close'])
         
         if expr:
             logger.info(f"Extracted expression: {expr}")

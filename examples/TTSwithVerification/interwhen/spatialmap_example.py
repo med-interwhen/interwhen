@@ -2,8 +2,8 @@
 SpatialMap experiment with thinking-phase step verification.
 
 Uses ThinkingPhaseStepVerifierSpatialMapMonitor which:
-  - Verifies the model's directional claims during <think> via side-streams
-  - Injects a structured step format after </think> (no meta-prompt needed)
+  - Verifies the model's directional claims during the think-open tag via side-streams
+  - Injects a structured step format after the think-close tag (no meta-prompt needed)
   - Verifies each step as the model fills in the structured template
 """
 
@@ -21,6 +21,7 @@ from transformers import AutoTokenizer
 
 from interwhen import stream_completion
 from interwhen.monitors import ThinkingPhaseStepVerifierSpatialMapMonitor
+from interwhen.utils.llm import get_think_tags
 
 logging.basicConfig(level=logging.INFO, format='%(message)s')
 logger = logging.getLogger(__name__)
@@ -88,8 +89,8 @@ def build_simple_prompt(example):
     return pre_prompt, description_trimmed
 
 
-def extract_solution(text: str) -> str:
-    """Extract the boxed answer from the response (after </think>)."""
+def extract_solution(text: str, close_think: str = "</think>") -> str:
+    """Extract the boxed answer from the response (after the think-close tag)."""
     patterns = [
         r"\\boxed\{([^}]*)\}",
         r"boxed\{([^}]*)\}",
@@ -97,8 +98,8 @@ def extract_solution(text: str) -> str:
         r"answer[:\s]*([A-D])",
         r"(?:^|\n)([A-D])(?:\s|$|\.)",
     ]
-    if "</think>" in text:
-        answer_section = text.split("</think>")[-1]
+    if close_think in text:
+        answer_section = text.split(close_think)[-1]
     else:
         answer_section = text
     answer_section = re.sub(r'<format>.*?</format>', '', answer_section, flags=re.DOTALL)
@@ -148,7 +149,7 @@ def save_prompt(idx, prompt_with_answer, reason_dir):
     logger.info(f"Saved reasoning trace to {filename}")
 
 
-def evaluate_spatialmap_answer(answer, options, ground_truth):
+def evaluate_spatialmap_answer(answer, options, ground_truth, close_think="</think>"):
     """
     Evaluate a SpatialMap MCQ answer and return (is_correct, extracted_answer, message).
     
@@ -160,7 +161,7 @@ def evaluate_spatialmap_answer(answer, options, ground_truth):
     Returns:
         Tuple of (is_correct, extracted_answer, message)
     """
-    sol = extract_solution(answer)
+    sol = extract_solution(answer, close_think)
     gt_sol = str(ground_truth).strip()
     if not sol:
         return False, None, "No expression found"
@@ -211,6 +212,7 @@ if __name__ == "__main__":
     
     # Setup LLM server
     llm_server = init_llm_server(args.model, port=args.port)
+    think_tags = get_think_tags(args.model)
     
     # Load tokenizer for accurate token counting
     logger.info(f"Loading tokenizer for {args.model}...")
@@ -262,15 +264,20 @@ if __name__ == "__main__":
 
         question_type = get_question_type(idx)
 
-        full_prompt = f"<|im_start|>system\n{pre_prompt}<|im_end|>\n<|im_start|>user\n{description_trimmed}<|im_end|>\n<|im_start|>assistant\n"
+        full_prompt = tokenizer.apply_chat_template(
+            [{"role": "system", "content": pre_prompt}, {"role": "user", "content": description_trimmed}],
+            tokenize=False,
+            add_generation_prompt=True,
+            enable_thinking=True,
+        )
         
         logger.info(f"\n{'='*60}")
         logger.info(f"Example {idx} ({question_type})")
         logger.info(f"{'='*60}")
         
         # Always use ThinkingPhaseStepVerifierSpatialMapMonitor:
-        # Phase 1 — verifies during <think> via side-streams
-        # Phase 2a — injects structured step format after </think>
+        # Phase 1 — verifies during the think-open tag via side-streams
+        # Phase 2a — injects structured step format after the think-close tag
         # Phase 2b — verifies structured output as model fills it in
         monitor = ThinkingPhaseStepVerifierSpatialMapMonitor(
             name="spatialmap_thinking_verifier",
@@ -279,7 +286,7 @@ if __name__ == "__main__":
             prompt=full_prompt,
             newline_threshold=args.newline_threshold,
             max_corrections=args.max_corrections,
-            answer_start_token="</think>",
+            answer_start_token=think_tags['close'],
             warmup_newlines=args.warmup,
         )
         
@@ -313,7 +320,7 @@ if __name__ == "__main__":
         
         # Evaluate the answer
         gt_sol = str(example.get("ground_truth", "")).strip()
-        is_correct, extracted_answer, message = evaluate_spatialmap_answer(answer, options, gt_sol)
+        is_correct, extracted_answer, message = evaluate_spatialmap_answer(answer, options, gt_sol, think_tags['close'])
         
         # "attempted" = model produced a real \boxed{} answer (not "no solution")
         attempted = (extracted_answer is not None and extracted_answer.strip().lower() != "no solution")

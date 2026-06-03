@@ -3,7 +3,7 @@ Step Verifier for Verina (Lean 4 code generation).
 
 This monitor:
 1. Counts reasoning steps (newlines) during generation
-2. After K newlines, forces the model to output code by closing </think> and prompting [CODE]
+2. After K newlines, forces the model to output code by closing the think-close tag and prompting [CODE]
 3. Extracts code from [CODE]...[/CODE] tags
 4. If verification fails, injects feedback and lets the model retry
 """
@@ -34,7 +34,7 @@ class StepVerifierVerinaMonitor(VerifyMonitor):
     
     This monitor:
     1. Counts reasoning steps (newlines) during generation
-    2. After K newlines, forces the model to output code by streaming with </think> + [CODE]
+    2. After K newlines, forces the model to output code by streaming with the think-close tag + [CODE]
     3. When [CODE]...[/CODE] is detected, extracts and verifies via Lean compilation
     4. If verification fails, injects feedback for retry
     """
@@ -49,6 +49,8 @@ class StepVerifierVerinaMonitor(VerifyMonitor):
         max_corrections: int = 5,
         compile_timeout: int = 120,
         async_execution: bool = True,
+        open_think: str = "<think>",
+        close_think: str = "</think>",
     ):
         super().__init__(name)
         self.task_data = task_data
@@ -58,6 +60,8 @@ class StepVerifierVerinaMonitor(VerifyMonitor):
         self.max_corrections = max_corrections
         self.compile_timeout = compile_timeout
         self.async_execution = async_execution
+        self.open_think = open_think
+        self.close_think = close_think
         self.max_corrections = max_corrections
         self.num_corrections = 0
         
@@ -68,7 +72,7 @@ class StepVerifierVerinaMonitor(VerifyMonitor):
         self.last_verified_code_end = 0  # Position of last [/CODE] we verified
         self.success_found = False  # Once True, block all future failure feedback
         self.verified_code = None  # Store the code that compiled successfully
-        self.last_triggered_think_start = -1  # Position of <think> block we're tracking
+        self.last_triggered_think_start = -1  # Position of the think-open tag block we're tracking
         self.last_triggered_think_newlines = 0  # Newlines in think block at last trigger
         
         # Diversity tracking: remember what failed so we can steer away from it
@@ -142,7 +146,7 @@ Please fix the error and provide the corrected code. Think through the problem c
 {LEAN4_API_REFERENCE}
 <|im_end|>
 <|im_start|>assistant
-<think>
+{self.open_think}
 """
             retry_prompt = current_prompt + error_feedback
             
@@ -163,7 +167,7 @@ Please fix the error and provide the corrected code. Think through the problem c
                     full_response = result["choices"][0]["text"].strip()
                     
                     # Extract code from [CODE]...[/CODE] block
-                    new_code = extract_code_from_response(full_response)
+                    new_code = extract_code_from_response(full_response, self.open_think, self.close_think)
                     
                     if new_code:
                         current_code = new_code
@@ -191,28 +195,30 @@ Please fix the error and provide the corrected code. Think through the problem c
         return bool(re.search(r'\[CODE\].*?\[/CODE\]', text, re.DOTALL | re.IGNORECASE))
     
     def _has_think_end(self, text: str) -> bool:
-        """Check if </think> is present."""
-        return "</think>" in text.lower()
+        """Check if close_think token is present."""
+        return self.close_think.lower() in text.lower()
 
-    _FORCE_CODE_VARIANTS = [
-        """\n\nWait, let me now output the full code as per my current understanding, so that the user can give feedback.
-</think> The final code is:
+    def _get_force_code_variants(self):
+        return [
+            f"""\n\nWait, let me now output the full code as per my current understanding, so that the user can give feedback.
+{self.close_think} The final code is:
 [CODE]""",
-        """\n\nLet me try writing my solution now.
-</think> Here is my implementation:
+            f"""\n\nLet me try writing my solution now.
+{self.close_think} Here is my implementation:
 [CODE]""",
-        """\n\nOk let me take a step back and write the code using a different strategy than before.
-</think> My approach:
+            f"""\n\nOk let me take a step back and write the code using a different strategy than before.
+{self.close_think} My approach:
 [CODE]""",
-        """\n\nI should try a completely different algorithm this time.
-</think> Alternative solution:
+            f"""\n\nI should try a completely different algorithm this time.
+{self.close_think} Alternative solution:
 [CODE]""",
-    ]
+        ]
 
     def _build_force_code_feedback(self) -> str:
         """Build the feedback string to force code output. Rotates prompts for diversity."""
-        idx = self.force_count % len(self._FORCE_CODE_VARIANTS)
-        return self._FORCE_CODE_VARIANTS[idx]
+        variants = self._get_force_code_variants()
+        idx = self.force_count % len(variants)
+        return variants[idx]
 
     def _build_diversity_feedback(self, compile_output: str) -> str:
         """
@@ -352,7 +358,7 @@ Do NOT repeat a similar approach. Use a fundamentally different algorithm or dat
         
         full_text = await self._stream_force_code(step)
         full_text_with_code = "[CODE]" + full_text
-        code = extract_code_from_response(full_text_with_code)
+        code = extract_code_from_response(full_text_with_code, self.open_think, self.close_think)
         
         if not code:
             print("[Verina] Forced code generation but could not extract code")
@@ -382,10 +388,10 @@ Do NOT repeat a similar approach. Use a fundamentally different algorithm or dat
             
             # Build escalating feedback based on how many times we've failed
             feedback = self._build_diversity_feedback(compile_output)
-            feedback += """
+            feedback += f"""
 <|im_end|>
 <|im_start|>assistant
-<think> It seems my code failed to compile. I should analyze the errror and try to fix it using a different approach.
+{self.open_think} It seems my code failed to compile. I should analyze the errror and try to fix it using a different approach.
 """
             async with self.lock:
                 print(f"[Verina] Verification #{current_verification}: Compilation FAILED after forcing code (attempt {len(self.failed_attempts)})")
@@ -415,7 +421,7 @@ Do NOT repeat a similar approach. Use a fundamentally different algorithm or dat
 Your code compiled successfully! Now give the final answer
 <|im_end|>
 <|im_start|>assistant
-<think> Good, the code I gave compiled successfully. Now I am confident in my answer, so I should output it in the required format.
+{self.open_think} Good, the code I gave compiled successfully. Now I am confident in my answer, so I should output it in the required format.
 """
         print(f"[Verina] Injecting success feedback with verified code in user message")
         async with self.lock:
@@ -445,20 +451,20 @@ Your code compiled successfully! Now give the final answer
         Determine when to trigger verification.
         
         Triggers:
-        1. Every K newlines without </think> → force code output
+        1. Every K newlines without the think-close tag → force code output
         
         Note: Final code verification is handled by verify_final_code() after generation completes.
         
         Returns: (should_verify, text_to_verify)
         """
 
-        last_think_start = generated_text.rfind('<think>')
-        last_think_end = generated_text.rfind('</think>')
+        last_think_start = generated_text.rfind(self.open_think)
+        last_think_end = generated_text.rfind(self.close_think)
         in_think_block = last_think_start > last_think_end
 
         if in_think_block:
             # Count newlines in the current think block
-            current_think_content = generated_text[last_think_start + 7:]
+            current_think_content = generated_text[last_think_start + len(self.open_think):]
             think_newlines = current_think_content.count('\n')
             
             # If this is a new think block, reset the tracking

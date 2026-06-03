@@ -2,8 +2,8 @@
 Maze experiment with thinking-phase step verification.
 
 Uses ThinkingPhaseStepVerifierMazeMonitor which:
-  - Verifies the model's traced path during <think> via side-streams
-  - Injects a structured step format after </think> (no meta-prompt needed)
+  - Verifies the model's traced path during the think-open tag via side-streams
+  - Injects a structured step format after the think-close tag (no meta-prompt needed)
   - Verifies each step as the model fills in the structured template
 """
 
@@ -22,6 +22,7 @@ from transformers import AutoTokenizer
 from interwhen import stream_completion
 from interwhen.monitors import ThinkingPhaseStepVerifierMazeMonitor
 from interwhen.utils.maze_verifier import parse_maze_from_prompt
+from interwhen.utils.llm import get_think_tags
 
 logging.basicConfig(level=logging.INFO, format='%(message)s')
 logger = logging.getLogger(__name__)
@@ -191,6 +192,7 @@ if __name__ == "__main__":
     
     # Setup LLM server
     llm_server = init_llm_server(args.model, port=args.port)
+    think_tags = get_think_tags(args.model)
     
     # Load tokenizer for accurate token counting
     logger.info(f"Loading tokenizer for {args.model}...")
@@ -230,7 +232,12 @@ if __name__ == "__main__":
         pattern = rf'\b({keys})\.\s*([A-Za-z0-9]+)\b'
         options = dict(re.findall(pattern, user_prompt))
         
-        full_prompt = f"<|im_start|>system\n{pre_prompt}<|im_end|>\n<|im_start|>user\n{user_prompt}<|im_end|>\n<|im_start|>assistant\n"
+        full_prompt = tokenizer.apply_chat_template(
+            [{"role": "system", "content": pre_prompt}, {"role": "user", "content": user_prompt}],
+            tokenize=False,
+            add_generation_prompt=True,
+            enable_thinking=True,
+        )
         
         # Parse maze from prompt
         grid, start_pos, exit_pos = parse_maze_from_prompt(user_prompt)
@@ -248,8 +255,8 @@ if __name__ == "__main__":
         logger.info(f"{'='*60}")
         
         # Always use ThinkingPhaseStepVerifierMazeMonitor:
-        # Phase 1 — verifies during <think> via side-streams
-        # Phase 2a — injects structured step format after </think>
+        # Phase 1 — verifies during the think-open tag via side-streams
+        # Phase 2a — injects structured step format after the think-close tag
         # Phase 2b — verifies structured output as model fills it in
         monitor = ThinkingPhaseStepVerifierMazeMonitor(
             name="maze_thinking_verifier",
@@ -261,7 +268,7 @@ if __name__ == "__main__":
             question_type=question_type,
             newline_threshold=args.newline_threshold,
             max_corrections=args.max_corrections,
-            answer_start_token="</think>",
+            answer_start_token=think_tags['close'],
             warmup_newlines=args.warmup,
         )
         

@@ -348,7 +348,7 @@ def build_full_prompt(data: BenchmarkData) -> str:
 
 
 # Extraction Logic
-def extract_spec_from_response(response: str) -> Dict[str, str]:
+def extract_spec_from_response(response: str, open_think: str = "<think>", close_think: str = "</think>") -> Dict[str, str]:
     """Extract precondition and postcondition from response.
     
     Returns dict with keys: precond, postcond, precond_aux, postcond_aux
@@ -360,14 +360,16 @@ def extract_spec_from_response(response: str) -> Dict[str, str]:
         "postcond_aux": "",
     }
     
-    # Remove <think>...</think> block
-    cleaned = re.sub(r'<think>.*?</think>', '', response, flags=re.DOTALL | re.IGNORECASE)
+    # Remove the think block
+    open_pattern = re.escape(open_think)
+    close_pattern = re.escape(close_think)
+    cleaned = re.sub(f'{open_pattern}.*?{close_pattern}', '', response, flags=re.DOTALL | re.IGNORECASE)
     
-    # Handle partial </think>
+    # Handle partial close_think
     if not cleaned.strip() or cleaned.strip() == response.strip():
-        think_end = response.lower().rfind("</think>")
+        think_end = response.lower().rfind(close_think.lower())
         if think_end != -1:
-            cleaned = response[think_end + len("</think>"):]
+            cleaned = response[think_end + len(close_think):]
     
     # Extract PRECOND_AUX (take last match to get the most recent/corrected version)
     precond_aux_matches = re.findall(r'\[PRECOND_AUX\](.*?)\[/PRECOND_AUX\]', cleaned, re.DOTALL | re.IGNORECASE)

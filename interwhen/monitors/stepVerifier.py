@@ -55,10 +55,10 @@ class StepVerifierGame24Monitor(VerifyMonitor):
         The key insight is that after feedback, we need to look BACK through all sections
         to find the last valid step at (N-1) level.
         """
-        if '</think>' not in generated_text:
+        if self.answer_start_token not in generated_text:
             return self.original_numbers.copy()
         
-        text_after_think = generated_text.split("</think>")[-1]
+        text_after_think = generated_text.split(self.answer_start_token)[-1]
         
         # Pattern to find complete steps
         step_pattern = re.compile(
@@ -127,10 +127,10 @@ class StepVerifierGame24Monitor(VerifyMonitor):
         Returns:
             (step_num, parsed_step) or (None, None) if no step found
         """
-        if '</think>' not in generated_text:
+        if self.answer_start_token not in generated_text:
             return None, None
         
-        text_after_think = generated_text.split("</think>")[-1]
+        text_after_think = generated_text.split(self.answer_start_token)[-1]
         
         # Get text after last feedback
         sections = re.split(r'\[VERIFIER FEEDBACK[^\]]*\]\s*', text_after_think, flags=re.DOTALL)
@@ -231,12 +231,12 @@ class StepVerifierGame24Monitor(VerifyMonitor):
 
 
     def step_extractor(self, chunk, generated_text):
-        # 1. Return False if </think> not present
-        if '</think>' not in generated_text:
+        # 1. Return False if the think-close tag not present
+        if self.answer_start_token not in generated_text:
             return False, None
 
-        # 2. Find where </think> ends
-        think_end_pos = generated_text.find("</think>") + len("</think>")
+        # 2. Find where answer_start_token ends
+        think_end_pos = generated_text.find(self.answer_start_token) + len(self.answer_start_token)
         text_after_think = generated_text[think_end_pos:]
         
         # 3. Skip past any previous [VERIFIER FEEDBACK...] blocks
@@ -412,10 +412,10 @@ class StepVerifierMazeMonitor(VerifyMonitor):
             'total_count': 0,
         }
         
-        if '</think>' not in generated_text:
+        if self.answer_start_token not in generated_text:
             return state
         
-        text_after_think = generated_text.split("</think>")[-1]
+        text_after_think = generated_text.split(self.answer_start_token)[-1]
         
         # Split by feedback to get sections
         sections = re.split(r'\[VERIFIER FEEDBACK[^\]]*\]\s*', text_after_think, flags=re.DOTALL)
@@ -476,10 +476,10 @@ class StepVerifierMazeMonitor(VerifyMonitor):
         Returns:
             (step_num, parsed_step, step_text) or (None, None, None) if no step found
         """
-        if '</think>' not in generated_text:
+        if self.answer_start_token not in generated_text:
             return None, None, None
         
-        text_after_think = generated_text.split("</think>")[-1]
+        text_after_think = generated_text.split(self.answer_start_token)[-1]
         
         # Get text after last feedback
         sections = re.split(r'\[VERIFIER FEEDBACK[^\]]*\]\s*', text_after_think, flags=re.DOTALL)
@@ -514,10 +514,10 @@ class StepVerifierMazeMonitor(VerifyMonitor):
         Returns:
             (is_valid, errors, section_found)
         """
-        if '</think>' not in generated_text:
+        if self.answer_start_token not in generated_text:
             return True, [], False
         
-        text_after_think = generated_text.split("</think>")[-1]
+        text_after_think = generated_text.split(self.answer_start_token)[-1]
         
         # Check if LOCATE section is present
         locate_match = re.search(r'LOCATE START AND EXIT', text_after_think, re.IGNORECASE)
@@ -696,8 +696,8 @@ class StepVerifierMazeMonitor(VerifyMonitor):
             return chunk, feedback
         
         # Check for boxed answer and verify it
-        if '</think>' in chunk:
-            text_after_think = chunk.split("</think>")[-1]
+        if self.answer_start_token in chunk:
+            text_after_think = chunk.split(self.answer_start_token)[-1]
             boxed_match = find_complete_boxed(text_after_think)
             if boxed_match:
                 boxed_text = text_after_think[boxed_match.start():boxed_match.end()]
@@ -742,12 +742,12 @@ class StepVerifierMazeMonitor(VerifyMonitor):
         Returns:
             (found_complete_step, text_slice) - text_slice includes all text up to step end
         """
-        # 1. Return False if </think> not present
-        if '</think>' not in generated_text:
+        # 1. Return False if the think-close tag not present
+        if self.answer_start_token not in generated_text:
             return False, None
 
-        # 2. Find where </think> ends
-        think_end_pos = generated_text.find("</think>") + len("</think>")
+        # 2. Find where answer_start_token ends
+        think_end_pos = generated_text.find(self.answer_start_token) + len(self.answer_start_token)
         text_after_think = generated_text[think_end_pos:]
         
         # 3. Skip past any previous [VERIFIER FEEDBACK...] blocks
@@ -938,7 +938,8 @@ class StepVerifierSpatialMapMonitor(VerifyMonitor):
         cls,
         problem_text: str,
         max_corrections: int = 5,
-        name: str = "spatialmap_step_verifier"
+        name: str = "spatialmap_step_verifier",
+        answer_start_token: str = "</think>",
     ) -> "StepVerifierSpatialMapMonitor":
         """
         Create a SpatialMap monitor from just the problem text.
@@ -953,7 +954,7 @@ class StepVerifierSpatialMapMonitor(VerifyMonitor):
         """
         return cls(
             name=name,
-            answer_start_token="</think>",
+            answer_start_token=answer_start_token,
             problem_text=problem_text,
             max_corrections=max_corrections
         )
@@ -968,10 +969,10 @@ class StepVerifierSpatialMapMonitor(VerifyMonitor):
         
         Only extracts claims from the MOST RECENT STEP 2 section (after any feedback).
         """
-        if '</think>' not in chunk:
+        if self.answer_start_token not in chunk:
             return []
         
-        text_after_think = chunk.split("</think>")[-1]
+        text_after_think = chunk.split(self.answer_start_token)[-1]
         
         # Skip past any previous [VERIFIER FEEDBACK...] blocks to get only the latest attempt
         feedback_pattern = re.compile(r'\[VERIFIER FEEDBACK[^\]]*\]', re.DOTALL)
@@ -1056,8 +1057,8 @@ class StepVerifierSpatialMapMonitor(VerifyMonitor):
                 return chunk, feedback
         
         # All claims valid — check for boxed answer (final answer verification)
-        if '</think>' in chunk:
-            text_after_think = chunk.split("</think>")[-1]
+        if self.answer_start_token in chunk:
+            text_after_think = chunk.split(self.answer_start_token)[-1]
             feedback_pattern = re.compile(r'\[VERIFIER FEEDBACK[^\]]*\]\s*', re.DOTALL)
             last_feedback_end = 0
             for match in feedback_pattern.finditer(text_after_think):
@@ -1349,11 +1350,11 @@ class StepVerifierSpatialMapMonitor(VerifyMonitor):
             (found_complete_step, text_slice) - text_slice includes all text up to verification point
         """
         # Must have answer section started
-        if '</think>' not in generated_text:
+        if self.answer_start_token not in generated_text:
             return False, None
         
-        # Find where </think> ends
-        think_end_pos = generated_text.find("</think>") + len("</think>")
+        # Find where answer_start_token ends
+        think_end_pos = generated_text.find(self.answer_start_token) + len(self.answer_start_token)
         text_after_think = generated_text[think_end_pos:]
         
         # Skip past any previous [VERIFIER FEEDBACK...] blocks

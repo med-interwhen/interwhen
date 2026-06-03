@@ -5,6 +5,8 @@ import logging
 
 logger = logging.getLogger(__name__)
 
+def count_tokens(text, tokenizer):
+    return len(tokenizer.encode(text, add_special_tokens=False))
 
 async def _cancel_tasks(tasks):
     """Cancel a list of asyncio Tasks and await them (swallow CancelledError)."""
@@ -16,16 +18,19 @@ async def _cancel_tasks(tasks):
     await asyncio.gather(*tasks, return_exceptions=True)
 
 async def stream_completion(prompt, prev_text = "", llm_server=None, monitors=[], add_delay=False, 
-            num_calls_index=0, termination_requires_validation=False, async_execution=True):
+            num_calls_index=0, termination_requires_validation=False, async_execution=True, tokenizer=None):
     stop_event = asyncio.Event()
     stop_info = {"generated_text": None, "feedback": None, "token_index": None}
     monitor_tasks = []
 
-    logger.warning("="*50 + f"Calling LM with prompt (call #{num_calls_index})" + "="*50)
+    # logger.warning("="*50 + f"Calling LM with prompt (call #{num_calls_index})" + "="*50)
     generated_text = prev_text
-    llm_server["payload"]["prompt"] = prompt + prev_text
+    
+    llm_server["payload"]["prompt"] = prompt + generated_text
+    token_count = count_tokens(llm_server["payload"]["prompt"], tokenizer)
+    llm_server['payload']['max_tokens'] = llm_server['payload']['context_length'] - token_count
 
-    logger.info(f"#{num_calls_index}: EOS")
+    # logger.info(f"#{num_calls_index}: EOS")
     async with httpx.AsyncClient(timeout=None) as client:
         async with client.stream("POST", llm_server["url"], headers=llm_server["headers"], json=llm_server["payload"]) as response:
             async for line in response.aiter_lines():
@@ -44,7 +49,7 @@ async def stream_completion(prompt, prev_text = "", llm_server=None, monitors=[]
                         if stop_event.is_set():
                             logger.info(f'\n[Early stop already triggered, ignoring chunk: {chunk}]')
                             break
-                        print(chunk, end="", flush=True)
+                        # print(chunk, end="", flush=True)
                         generated_text += chunk
 
                         # Start monitor task in background with chunk index
@@ -77,6 +82,6 @@ async def stream_completion(prompt, prev_text = "", llm_server=None, monitors=[]
             return corrected_text # No solution found, return no solution ie soundness is 100% is it doesnt pass the verifer
         if stop_info.get("phase") == "final_answer_correct":
             return corrected_text  # Expression verified correct, stop generation
-        return await stream_completion(prompt, prev_text=corrected_text, llm_server=llm_server, monitors=monitors, add_delay=add_delay, num_calls_index=num_calls_index+1, termination_requires_validation=termination_requires_validation, async_execution=async_execution)
+        return await stream_completion(prompt, prev_text=corrected_text, llm_server=llm_server, monitors=monitors, add_delay=add_delay, num_calls_index=num_calls_index+1, termination_requires_validation=termination_requires_validation, async_execution=async_execution, tokenizer=tokenizer)
 
     return generated_text

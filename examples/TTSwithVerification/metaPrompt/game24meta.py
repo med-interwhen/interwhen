@@ -11,6 +11,7 @@ from transformers import AutoTokenizer
 
 from interwhen import stream_completion
 from interwhen.monitors import StepVerifierGame24Monitor
+from interwhen.utils.llm import get_think_tags
 
 # ============== MODEL CONFIGURATION ==============
 MAIN_MODEL = "Qwen/QwQ-32B"
@@ -352,6 +353,8 @@ if __name__ == "__main__":
 
     main_model = args.model
 
+    think_tags = get_think_tags(main_model)
+
     # Setup output directories based on model name
     output_dirs = get_output_dirs(main_model)
     logfile = get_log_filename(main_model, args.num_examples)
@@ -398,7 +401,7 @@ if __name__ == "__main__":
         if args.monitor:
             monitors = (StepVerifierGame24Monitor(
                 name="game24_verifier",
-                answer_start_token="</think>",
+                answer_start_token=think_tags['close'],
                 original_numbers=nums,
                 max_corrections=args.max_corrections,
             ),)
@@ -408,7 +411,12 @@ if __name__ == "__main__":
         logger.info(f"---- Example {idx+1} ----")
         logger.info(f"Numbers: {nums}")
 
-        full_prompt = f"<|im_start|>user\n{prompt}<|im_end|>\n<|im_start|>assistant\n"
+        full_prompt = tokenizer.apply_chat_template(
+            [{"role": "user", "content": prompt}],
+            tokenize=False,
+            add_generation_prompt=True,
+            enable_thinking=True,
+        )
 
         try:
             answer = asyncio.run(stream_completion(

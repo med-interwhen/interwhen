@@ -6,16 +6,16 @@ to ask the model about its current progress.
 
 Workflow
 --------
-A) **DURING the thinking phase** (inside ``<think>...</think>``):
+A) **DURING the thinking phase** (inside the thinking block):
    After a warmup period, every *N* newlines in the thinking trace:
-   1. Inject ``</think> The expression that I found till now is {`` and
+   1. Inject the think-close tag plus ``The expression that I found till now is {`` and
       stream ~20 tokens to extract the expression the model outputs.
    2. Verify the expression against Game-of-24 rules.
    3. If **wrong** -> inject error feedback into thinking trace.
-   4. If **correct AND complete** -> inject early-stop message + ``</think>``.
+   4. If **correct AND complete** -> inject early-stop message + the think-close tag.
    5. If **correct AND partial** -> no feedback, let model keep thinking.
 
-B) **AFTER a natural ``</think>``**:
+B) **AFTER a natural think-close tag**:
    Inject the expression extraction prompt so the model outputs its
    answer expression, then verify in the same way.
 """
@@ -40,12 +40,7 @@ logger = logging.getLogger(__name__)
 #  Prompts injected to elicit an expression from the model.
 # ---------------------------------------------------------------------------
 
-# Injected during the thinking phase (after </think>)
-THINKING_PHASE_EXPRESSION_PROMPT = (
-    "</think>\nThe expression that I found till now is {"
-)
-
-# Injected after a natural </think> to force the model to emit \boxed{expr}
+# Injected after a natural think-close tag to force the model to emit \boxed{expr}
 FINAL_EXPRESSION_PROMPT = (
     "\nThe final expression is \\boxed"
 )
@@ -149,7 +144,7 @@ class ThinkingPhaseStepVerifierGame24Monitor(VerifyMonitor):
         side-stream asking for the current expression, verify it, and
         give appropriate feedback.
 
-    After natural ``</think>``: inject expression prompt, verify the
+    After natural think-close tag: inject expression prompt, verify the
         final answer.
     """
 
@@ -178,6 +173,11 @@ class ThinkingPhaseStepVerifierGame24Monitor(VerifyMonitor):
         # ---- state ----
         self._think_phase_corrections = 0
         self._verified_expression = None  # set by Phase 1 early-stop
+
+        # Build the thinking-phase expression prompt using the configured answer_start_token
+        self._thinking_phase_expression_prompt = (
+            f"{self.answer_start_token}\nThe expression that I found till now is {{"
+        )
 
     # ------------------------------------------------------------------
     #  helpers
@@ -323,7 +323,7 @@ class ThinkingPhaseStepVerifierGame24Monitor(VerifyMonitor):
     #  step_extractor
     # ------------------------------------------------------------------
     def step_extractor(self, chunk: str, generated_text: str):
-        # ===== PHASE 1: still inside <think> =====
+        # ===== PHASE 1: still inside the think-open tag =====
         if self._is_in_thinking_phase(generated_text):
             if self._think_phase_corrections >= self.max_corrections:
                 return False, None
@@ -346,12 +346,12 @@ class ThinkingPhaseStepVerifierGame24Monitor(VerifyMonitor):
 
             return False, None
 
-        # ===== PHASE 2: after </think> =====
+        # ===== PHASE 2: after the think-close tag =====
 
-        # 2a: </think> present but we haven't injected the expression prompt yet
+        # 2a: the think-close tag present but we haven't injected the expression prompt yet
         if FINAL_EXPRESSION_PROMPT.strip() not in generated_text:
             logger.info(
-                "[step_extractor] Phase 2a: </think> detected, "
+                "[step_extractor] Phase 2a: think-close tag detected, "
                 "expression prompt not yet injected."
             )
             return True, generated_text
@@ -387,7 +387,7 @@ class ThinkingPhaseStepVerifierGame24Monitor(VerifyMonitor):
                 f"  Thinking len : {len(step)} chars"
             )
 
-            text_with_prompt = step + "\n" + THINKING_PHASE_EXPRESSION_PROMPT
+            text_with_prompt = step + "\n" + self._thinking_phase_expression_prompt
 
             expr_str = await self._side_stream_expression(text_with_prompt, max_new_tokens=20)
 
@@ -460,11 +460,11 @@ class ThinkingPhaseStepVerifierGame24Monitor(VerifyMonitor):
                 return step, None
 
         # ==================================================================
-        # CASE 2a: </think> present but expression prompt not yet injected
+        # CASE 2a: the think-close tag present but expression prompt not yet injected
         # ==================================================================
         if FINAL_EXPRESSION_PROMPT.strip() not in step:
             logger.info(
-                "[Phase 2a] Natural </think> detected. "
+                "[Phase 2a] Natural think-close tag detected. "
                 "Injecting expression extraction prompt."
             )
             prompt_text = FINAL_EXPRESSION_PROMPT
@@ -477,7 +477,7 @@ class ThinkingPhaseStepVerifierGame24Monitor(VerifyMonitor):
             return step, prompt_text
 
         # ==================================================================
-        # CASE 2b: After </think> + expression prompt -- verify final answer
+        # CASE 2b: After the think-close tag + expression prompt -- verify final answer
         # ==================================================================
 
         num_corrections = self._count_feedback_blocks(step)
@@ -526,7 +526,7 @@ class ThinkingPhaseStepVerifierGame24Monitor(VerifyMonitor):
             used_numbers = _extract_numbers_from_expr(expr_str)
             errors = [
                 f"Expression '{expr_str}' only uses {len(used_numbers)} of "
-                f"{len(self.original_numbers)} numbers. After </think>, "
+                f"{len(self.original_numbers)} numbers. After the think-close tag, "
                 f"a COMPLETE expression using ALL numbers is required."
             ]
 
@@ -566,7 +566,7 @@ class ThinkingPhaseStepVerifierGame24Monitor(VerifyMonitor):
             result = base_text.rstrip() + event_info["feedback"]
             logger.info(
                 f"[fix] Phase: rollback_to_thinking\n"
-                f"  -> Appended error feedback into <think> trace.\n"
+                f"  -> Appended error feedback into thinking trace.\n"
                 f"  -> Think-phase corrections: {self._think_phase_corrections}/{self.max_corrections}"
             )
             return result
@@ -576,7 +576,7 @@ class ThinkingPhaseStepVerifierGame24Monitor(VerifyMonitor):
             result = base_text.rstrip() + event_info["feedback"]
             logger.info(
                 f"[fix] Phase: early_stop_answer\n"
-                f"  -> Verified expression passed. Injecting early-stop + </think>.\n"
+                f"  -> Verified expression passed. Injecting early-stop + think-close tag.\n"
                 f"  -> Model will now generate the final answer."
             )
             return result
@@ -592,7 +592,7 @@ class ThinkingPhaseStepVerifierGame24Monitor(VerifyMonitor):
         if phase == "inject_expression_prompt":
             logger.info(
                 f"[fix] Phase: inject_expression_prompt\n"
-                f"  -> Natural </think> detected.\n"
+                f"  -> Natural think-close tag detected.\n"
                 f"  -> Appending expression extraction prompt."
             )
             return event_info["generated_text"] + event_info["feedback"]

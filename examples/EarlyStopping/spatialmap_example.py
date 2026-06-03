@@ -13,6 +13,7 @@ from transformers import AutoTokenizer
 
 from interwhen import stream_completion
 from interwhen.monitors import SimpleTextReplaceMonitor, KstableAnswerMCQMonitor, EATMonitor, DEERMonitor
+from interwhen.utils.llm import get_think_tags
 import re
 
 # ============== MODEL CONFIGURATION ==============
@@ -167,6 +168,7 @@ if __name__ == "__main__":
     # Use models from args (allows command-line override)
     main_model = args.main_model
     earlystop_model = args.earlystop_model
+    think_tags = get_think_tags(main_model)
     
     # Setup output directories based on model name
     output_dirs = get_output_dirs(main_model)
@@ -226,7 +228,7 @@ if __name__ == "__main__":
                 name="maze_kstable",
                 k=3,
                 options=options,  # Validate equations use exactly these numbers
-                answer_start_token="</think>"
+                answer_start_token=think_tags['close']
             ),)
         else:
             monitors = ()
@@ -235,8 +237,14 @@ if __name__ == "__main__":
         logger.info(f"---- Example {idx} ----")
 
         # Run LLM with streaming + monitor
+        full_prompt = tokenizer.apply_chat_template(
+            [{"role": "system", "content": prompt1}, {"role": "user", "content": prompt2}],
+            tokenize=False,
+            add_generation_prompt=True,
+            enable_thinking=True,
+        )
         answer = asyncio.run(stream_completion(
-            f"<|im_start|>system\n{prompt1}<|im_end|>\n<|im_start|>user\n{prompt2}<|im_end|>\n<|im_start|>assistant\n",
+            full_prompt,
             llm_server=llm_server,
             monitors=monitors,
             add_delay=False,

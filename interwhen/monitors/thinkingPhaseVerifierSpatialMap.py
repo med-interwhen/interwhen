@@ -8,7 +8,7 @@ the stated problem constraints.
 
 Workflow
 --------
-A) **DURING the thinking phase** (inside ``<think>...</think>``):
+A) **DURING the thinking phase** (inside the thinking block):
    After a warmup period, every *N* newlines in the thinking trace:
    1. Inject a first-person prompt to extract parsed and derived
       spatial relationships (STEP 1 pre-filled, STEP 2 generated).
@@ -17,7 +17,7 @@ A) **DURING the thinking phase** (inside ``<think>...</think>``):
    4. If **errors** -> inject feedback into thinking trace.
    5. If **all valid** -> no feedback, keep thinking.
 
-B) **AFTER ``</think>``**:
+B) **AFTER think-close tag**:
    Phase 2a: Inject structured step format template.
    Phase 2b: Verify directional claims and final answer
    (direction / object / counting questions) as model fills template.
@@ -58,7 +58,7 @@ def _build_spatialmap_format_block() -> str:
     Build the ``<format>...</format>`` block that describes the structured
     output template for SpatialMap tasks.
 
-    Re-used by both the side-stream (Phase 1) and the post-``</think>``
+    Re-used by both the side-stream (Phase 1) and the post-think-close-tag
     injection (Phase 2a).
     """
     return (
@@ -96,7 +96,7 @@ def _build_spatialmap_thinking_phase_prompt(
     of producing verifiable directional claims within the token budget.
 
     Written in the LLM's own first-person thinking voice so it blends
-    naturally with the ``<think>`` trace.
+    naturally with the think-open tag trace.
     """
     # Pre-fill STEP 1 from the ground-truth parsed relations
     step1_lines = []
@@ -123,7 +123,7 @@ def _build_spatialmap_thinking_phase_prompt(
 
 def _build_spatialmap_structured_prompt() -> str:
     """
-    Build the structured format prompt injected after ``</think>``.
+    Build the structured format prompt injected after the think-close tag.
 
     Analogous to the maze's structured format injection — gives the
     model a template to fill in so we can parse and verify each step.
@@ -150,15 +150,15 @@ class ThinkingPhaseStepVerifierSpatialMapMonitor(VerifyMonitor):
 
     **No meta-prompt required** — works with a plain user prompt containing
     just the map description and question.  Structure is injected by this
-    monitor after ``</think>`` (natural or early-stop), exactly like the
+    monitor after the think-close tag (natural or early-stop), exactly like the
     Maze monitor injects its step format.
 
-    Phase 1 – During ``<think>...</think>``:
+    Phase 1 – During the thinking block:
         Every N newlines (after warmup), fork a side-stream that
         injects a structured step prompt, stream tokens, parse directional
         claims from STEP 2, and verify them against Z3.
 
-    Phase 2a – ``</think>`` detected, structured prompt not yet injected:
+    Phase 2a – think-close tag detected, structured prompt not yet injected:
         Inject the structured step-by-step format template so the model
         fills it in (STEP 1 → STEP 2 → STEP 3 → FINAL ANSWER → ``\\boxed{}``).
 
@@ -297,7 +297,7 @@ class ThinkingPhaseStepVerifierSpatialMapMonitor(VerifyMonitor):
         return self.answer_start_token not in generated_text
 
     def _structured_prompt_injected(self, generated_text: str) -> bool:
-        """Check if structured format was already injected after </think>."""
+        """Check if structured format was already injected after the think-close tag."""
         if self.answer_start_token not in generated_text:
             return False
         after_think = generated_text.split(self.answer_start_token, 1)[1]
@@ -386,10 +386,10 @@ class ThinkingPhaseStepVerifierSpatialMapMonitor(VerifyMonitor):
         """
         Phase 1 (thinking): trigger at every newline_threshold multiple
             (after warmup).
-        Phase 2 (after </think>): trigger on structured steps or boxed
+        Phase 2 (after the think-close tag): trigger on structured steps or boxed
             answer.
         """
-        # ===== PHASE 1: still inside <think> =====
+        # ===== PHASE 1: still inside the think-open tag =====
         if self._is_in_thinking_phase(generated_text):
             if self._think_phase_corrections >= self.max_corrections:
                 return False, None
@@ -412,12 +412,12 @@ class ThinkingPhaseStepVerifierSpatialMapMonitor(VerifyMonitor):
 
             return False, None
 
-        # ===== PHASE 2: after </think> =====
+        # ===== PHASE 2: after the think-close tag =====
 
         # 2a: structured prompt not yet injected → trigger immediately
         if not self._structured_prompt_injected(generated_text):
             logger.info(
-                "[SpatialMap step_extractor] Phase 2a: </think> detected, "
+                "[SpatialMap step_extractor] Phase 2a: think-close tag detected, "
                 "structured prompt not yet injected."
             )
             return True, generated_text
@@ -484,9 +484,9 @@ class ThinkingPhaseStepVerifierSpatialMapMonitor(VerifyMonitor):
     # ------------------------------------------------------------------
     async def verify(self, step: str, token_index: int, event, event_info):
         """
-        Case 1 -- still in thinking (no </think>):
+        Case 1 -- still in thinking (no think-close tag):
             Fork side-stream, parse claims, verify with Z3.
-        Case 2 -- after </think>:
+        Case 2 -- after the think-close tag:
             2a: Inject structured prompt.
             2b: Verify STEP 2 claims and/or final answer.
         """
@@ -583,11 +583,11 @@ class ThinkingPhaseStepVerifierSpatialMapMonitor(VerifyMonitor):
             return step, None
 
         # ==================================================================
-        # CASE 2a: </think> present but structured prompt not yet injected
+        # CASE 2a: the think-close tag present but structured prompt not yet injected
         # ==================================================================
         if not self._structured_prompt_injected(step):
             logger.info(
-                "[SpatialMap Phase 2a] </think> detected. "
+                "[SpatialMap Phase 2a] think-close tag detected. "
                 "Injecting structured step format."
             )
             if not event.is_set():
@@ -993,7 +993,7 @@ class ThinkingPhaseStepVerifierSpatialMapMonitor(VerifyMonitor):
             result = base_text.rstrip() + event_info["feedback"]
             logger.info(
                 f"[SpatialMap fix] Phase: rollback_to_thinking\n"
-                f"  -> Appended error feedback into <think> trace.\n"
+                f"  -> Appended error feedback into thinking trace.\n"
                 f"  -> Think-phase corrections: {self._think_phase_corrections}/{self.max_corrections}"
             )
             return result
@@ -1001,7 +1001,7 @@ class ThinkingPhaseStepVerifierSpatialMapMonitor(VerifyMonitor):
         if phase == "inject_structured_prompt":
             logger.info(
                 "[SpatialMap fix] Phase: inject_structured_prompt\n"
-                "  -> Appending structured step format after </think>."
+                "  -> Appending structured step format after the think-close tag."
             )
             return event_info["generated_text"] + event_info["feedback"]
 

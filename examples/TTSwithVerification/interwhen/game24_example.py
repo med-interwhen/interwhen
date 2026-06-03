@@ -2,8 +2,8 @@
 Game of 24 experiment with thinking-phase step verification.
 
 Uses ThinkingPhaseStepVerifierGame24Monitor which:
-  - Verifies the model's intermediate expressions during <think> via side-streams
-  - Injects expression extraction after </think>
+  - Verifies the model's intermediate expressions during the think-open tag via side-streams
+  - Injects expression extraction after the think-close tag
   - Verifies the final \\boxed{} expression for correctness
 """
 
@@ -19,6 +19,7 @@ from transformers import AutoTokenizer
 
 from interwhen import stream_completion
 from interwhen.monitors import ThinkingPhaseStepVerifierGame24Monitor
+from interwhen.utils.llm import get_think_tags
 
 # ============== MODEL CONFIGURATION ==============
 MAIN_MODEL = "Qwen/QwQ-32B"
@@ -116,15 +117,15 @@ def count_tokens(text: str, tokenizer) -> int:
     return len(tokens)
 
 
-def extract_solution(text):
+def extract_solution(text, open_think="<think>", close_think="</think>"):
     
-    # Only search for \boxed{} AFTER </think> to avoid grabbing unverified
+    # Only search for \boxed{} AFTER the think-close tag to avoid grabbing unverified
     # expressions from inside the thinking trace.
-    # If model opened <think> but never closed it (hit token limit), there is
+    # If model opened the think tag but never closed it (hit token limit), there is
     # no final answer — return None.
-    if '</think>' in text:
-        search_text = text[text.rfind('</think>'):]
-    elif '<think>' in text:
+    if close_think in text:
+        search_text = text[text.rfind(close_think):]
+    elif open_think in text:
         # Model started thinking but never finished — no verified answer
         return None
     else:
@@ -212,7 +213,7 @@ def evaluate_expression(expr, expected_nums=None):
     except Exception:
         return False
 
-def evaluate_game24_answer(answer, nums):
+def evaluate_game24_answer(answer, nums, open_think="<think>", close_think="</think>"):
     """
     Evaluate a Game24 answer and return (is_correct, expr, error_message).
     
@@ -223,7 +224,7 @@ def evaluate_game24_answer(answer, nums):
     Returns:
         Tuple of (is_correct, extracted_expression, error_message)
     """
-    expr = extract_solution(answer)
+    expr = extract_solution(answer, open_think, close_think)
     if not expr:
         return False, None, "No expression found"
     if evaluate_expression(expr, expected_nums=nums):
@@ -248,6 +249,8 @@ if __name__ == "__main__":
     args = parser.parse_args()
 
     main_model = args.model
+
+    think_tags = get_think_tags(main_model)
 
     output_dirs = get_output_dirs(main_model)
     logfile = get_log_filename(main_model, args.num_examples)
@@ -279,7 +282,7 @@ if __name__ == "__main__":
     logger.info("Tokenizer loaded successfully.")
 
     num_correct = 0
-    num_attempted = 0  # model produced a real answer (not "no solution" and not missing after </think>)
+    num_attempted = 0  # model produced a real answer (not "no solution" and not missing after the think-close tag)
     num_excluded = 0   # excluded from soundness (no solution or token budget exceeded)
     N = args.num_examples
     total_generated_tokens = 0
@@ -291,7 +294,12 @@ if __name__ == "__main__":
         example = dataset[idx]
         nums = example["numbers"]
         prompt = build_prompt(nums)
-        full_prompt = f"<|im_start|>user\n{prompt}<|im_end|>\n<|im_start|>assistant\n"
+        full_prompt = tokenizer.apply_chat_template(
+            [{"role": "user", "content": prompt}],
+            tokenize=False,
+            add_generation_prompt=True,
+            enable_thinking=True,
+        )
 
         monitor = ThinkingPhaseStepVerifierGame24Monitor(
             name="game24_verifier",
@@ -300,7 +308,7 @@ if __name__ == "__main__":
             prompt=full_prompt,
             newline_threshold=args.newline_threshold,
             max_corrections=args.max_corrections,
-            answer_start_token="</think>",
+            answer_start_token=think_tags['close'],
             warmup_newlines=args.warmup,
         )
 
@@ -328,8 +336,8 @@ if __name__ == "__main__":
         total_generated_tokens += generated_tokens
         logger.info(f"Generated tokens in this example: {generated_tokens}")
 
-        is_correct, expr, message = evaluate_game24_answer(answer, nums)
-        # Attempted: model produced a real answer (not "no solution" and not missing after </think>)
+        is_correct, expr, message = evaluate_game24_answer(answer, nums, think_tags['open'], think_tags['close'])
+        # Attempted: model produced a real answer (not "no solution" and not missing after the think-close tag)
         gave_no_solution = (expr is not None and "no solution" in expr.strip().lower())
         no_expr_found = (expr is None)
         attempted = not (gave_no_solution or no_expr_found)

@@ -6,16 +6,16 @@ thinking phase to ask the model about its current traced path.
 
 Workflow
 --------
-A) **DURING the thinking phase** (inside ``<think>...</think>``):
+A) **DURING the thinking phase** (inside the thinking block):
    After a warmup period, every *N* newlines in the thinking trace:
    1. Inject a first-person prompt to extract the traced path steps.
    2. Parse and verify each step against the maze grid.
    3. If **errors** -> inject feedback into thinking trace.
-   4. If **path reaches E** -> inject early-stop + ``</think>`` +
+   4. If **path reaches E** -> inject early-stop + the think-close tag +
       structured format.
    5. If **partial but correct** -> no feedback, keep thinking.
 
-B) **AFTER ``</think>``**:
+B) **AFTER think-close tag**:
    Phase 2a: Inject structured step format template.
    Phase 2b: Verify each step as the model fills in the template.
    Once ``\\boxed{}`` appears, stop generation.
@@ -50,7 +50,7 @@ def _build_maze_format_block(question_type: str) -> str:
     """
     Build the <format>...</format> block that describes the structured
     output template.  Re-used by both the side-stream (Phase 1) and
-    the post-</think> injection (Phase 2a).
+    the post-think-close-tag injection (Phase 2a).
     """
     if question_type == "relative_position":
         return (
@@ -98,7 +98,7 @@ def _build_maze_thinking_phase_prompt(question_type: str) -> str:
     Build the side-stream prompt injected during the thinking phase.
 
     Written in the LLM's own first-person thinking voice so it blends
-    naturally with the ``<think>`` trace.  Includes the ``<format>``
+    naturally with the think-open tag trace.  Includes the ``<format>``
     block and the starting marker so the model begins filling in.
     """
     format_block = _build_maze_format_block(question_type)
@@ -112,7 +112,7 @@ def _build_maze_thinking_phase_prompt(question_type: str) -> str:
 
 def _build_maze_structured_prompt(question_type: str) -> str:
     """
-    Build the structured format prompt injected after </think>.
+    Build the structured format prompt injected after the think-close tag.
 
     This is analogous to Game24's step format injection — it gives the
     model a template to fill in so we can parse and verify each step.
@@ -137,15 +137,15 @@ class ThinkingPhaseStepVerifierMazeMonitor(VerifyMonitor):
 
     **No meta-prompt required** — works with a plain user prompt containing
     just the maze and question.  Structure is injected by this monitor
-    after ``</think>`` (natural or early-stop), exactly like Game24
+    after the think-close tag (natural or early-stop), exactly like Game24
     injects its step format.
 
-    Phase 1 – During ``<think>...</think>``:
+    Phase 1 – During the thinking block:
         Every N newlines (after warmup), fork a side-stream that
-        injects ``</think>`` + a structured step prompt, stream ~300
+        injects the think-close tag + a structured step prompt, stream ~300
         tokens, parse and verify each step against the maze grid.
 
-    Phase 2a – ``</think>`` detected, structured prompt not yet injected:
+    Phase 2a – think-close tag detected, structured prompt not yet injected:
         Inject the structured step-by-step format template so the model
         fills it in (LOCATE → STEPs → FINAL ANSWER → ``\\boxed{}``).
 
@@ -182,7 +182,7 @@ class ThinkingPhaseStepVerifierMazeMonitor(VerifyMonitor):
         self.async_execution = async_execution
         self.warmup_newlines = warmup_newlines
 
-        # Build the structured prompt that will be injected after </think>
+        # Build the structured prompt that will be injected after the think-close tag
         self._structured_prompt = _build_maze_structured_prompt(question_type)
         # Build the thinking-phase side-stream prompt (in LLM's own voice)
         self._thinking_phase_prompt = _build_maze_thinking_phase_prompt(question_type)
@@ -203,7 +203,7 @@ class ThinkingPhaseStepVerifierMazeMonitor(VerifyMonitor):
         return self.answer_start_token not in generated_text
 
     def _structured_prompt_injected(self, generated_text: str) -> bool:
-        """Check if structured format was already injected after </think>."""
+        """Check if structured format was already injected after the think-close tag."""
         if self.answer_start_token not in generated_text:
             return False
         after_think = generated_text.split(self.answer_start_token, 1)[1]
@@ -414,7 +414,7 @@ class ThinkingPhaseStepVerifierMazeMonitor(VerifyMonitor):
     #  step_extractor
     # ------------------------------------------------------------------
     def step_extractor(self, chunk: str, generated_text: str):
-        # ===== PHASE 1: still inside <think> =====
+        # ===== PHASE 1: still inside the think-open tag =====
         if self._is_in_thinking_phase(generated_text):
             if self._think_phase_corrections >= self.max_corrections:
                 return False, None
@@ -437,12 +437,12 @@ class ThinkingPhaseStepVerifierMazeMonitor(VerifyMonitor):
 
             return False, None
 
-        # ===== PHASE 2: after </think> =====
+        # ===== PHASE 2: after the think-close tag =====
 
         # 2a: structured prompt not yet injected → trigger immediately
         if not self._structured_prompt_injected(generated_text):
             logger.info(
-                "[Maze step_extractor] Phase 2a: </think> detected, "
+                "[Maze step_extractor] Phase 2a: think-close tag detected, "
                 "structured prompt not yet injected."
             )
             return True, generated_text
@@ -600,7 +600,7 @@ class ThinkingPhaseStepVerifierMazeMonitor(VerifyMonitor):
                 logger.info(
                     f"[Maze Phase 1] VALID COMPLETE path to E={self.exit_pos}\n"
                     f"  Steps: {len(steps)}, Right={r_count}, Left={l_count}, Total={t_count}\n"
-                    f"  Action: Inject early-stop + </think> + structured format."
+                    f"  Action: Inject early-stop + think-close tag + structured format."
                 )
                 early_stop_msg = (
                     f"\n\nWait, I have successfully traced the path from "
@@ -637,11 +637,11 @@ class ThinkingPhaseStepVerifierMazeMonitor(VerifyMonitor):
                 return step, None
 
         # ==================================================================
-        # CASE 2a: </think> present but structured prompt not yet injected
+        # CASE 2a: the think-close tag present but structured prompt not yet injected
         # ==================================================================
         if not self._structured_prompt_injected(step):
             logger.info(
-                "[Maze Phase 2a] </think> detected. "
+                "[Maze Phase 2a] think-close tag detected. "
                 "Injecting structured step format."
             )
             if not event.is_set():
@@ -835,7 +835,7 @@ class ThinkingPhaseStepVerifierMazeMonitor(VerifyMonitor):
             result = base_text.rstrip() + event_info["feedback"]
             logger.info(
                 f"[Maze fix] Phase: rollback_to_thinking\n"
-                f"  -> Appended error feedback into <think> trace.\n"
+                f"  -> Appended error feedback into thinking trace.\n"
                 f"  -> Think-phase corrections: {self._think_phase_corrections}/{self.max_corrections}"
             )
             return result
@@ -849,14 +849,14 @@ class ThinkingPhaseStepVerifierMazeMonitor(VerifyMonitor):
                 f"  -> Path verified: {counts.get('steps', '?')} steps, "
                 f"R={counts.get('right', '?')}, L={counts.get('left', '?')}, "
                 f"T={counts.get('total', '?')}\n"
-                f"  -> Injecting early-stop + </think> + structured format."
+                f"  -> Injecting early-stop + think-close tag + structured format."
             )
             return result
 
         if phase == "inject_structured_prompt":
             logger.info(
                 "[Maze fix] Phase: inject_structured_prompt\n"
-                "  -> Appending structured step format after </think>."
+                "  -> Appending structured step format after the think-close tag."
             )
             return event_info["generated_text"] + event_info["feedback"]
 

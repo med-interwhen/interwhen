@@ -28,7 +28,7 @@ class StepVerifierVerinaSpecMonitor(VerifyMonitor):
     
     This monitor:
     1. Counts reasoning steps (newlines) during generation
-    2. After K newlines, forces the model to output spec by streaming with </think> + [PRECOND]/[POSTCOND]
+    2. After K newlines, forces the model to output spec by streaming with the think-close tag + [PRECOND]/[POSTCOND]
     3. When [PRECOND]...[/PRECOND] and [POSTCOND]...[/POSTCOND] are detected, extracts and verifies via Lean compilation
     4. If verification fails, injects feedback for retry
     """
@@ -43,6 +43,8 @@ class StepVerifierVerinaSpecMonitor(VerifyMonitor):
         max_corrections: int = 3,
         compile_timeout: int = 120,
         async_execution: bool = True,
+        open_think: str = "<think>",
+        close_think: str = "</think>",
     ):
         super().__init__(name)
         self.task_data = task_data
@@ -52,6 +54,8 @@ class StepVerifierVerinaSpecMonitor(VerifyMonitor):
         self.max_corrections = max_corrections
         self.compile_timeout = compile_timeout
         self.async_execution = async_execution
+        self.open_think = open_think
+        self.close_think = close_think
         self.max_corrections = max_corrections
         self.num_corrections = 0
         
@@ -140,7 +144,7 @@ Please fix the error and provide the corrected specification. Think through the 
 {LEAN4_API_REFERENCE}
 <|im_end|>
 <|im_start|>assistant
-<think>
+{self.open_think}
 """
             retry_prompt = current_prompt + error_feedback
             
@@ -161,7 +165,7 @@ Please fix the error and provide the corrected specification. Think through the 
                     full_response = result["choices"][0]["text"].strip()
                     
                     # Extract spec from response
-                    new_spec = extract_spec_from_response(full_response)
+                    new_spec = extract_spec_from_response(full_response, self.open_think, self.close_think)
                     
                     if new_spec and new_spec.get("postcond"):
                         current_spec = new_spec
@@ -180,25 +184,27 @@ Please fix the error and provide the corrected specification. Think through the 
         """Count the number of newlines in text."""
         return text.count('\n')
 
-    _FORCE_SPEC_VARIANTS = [
-        """\n\nWait, let me now output the specification as per my current understanding, so that the user can give feedback.
-</think> The final specification is:
+    def _get_force_spec_variants(self):
+        return [
+            f"""\n\nWait, let me now output the specification as per my current understanding, so that the user can give feedback.
+{self.close_think} The final specification is:
 [PRECOND]""",
-        """\n\nLet me try writing the specification now.
-</think> Here is my specification:
+            f"""\n\nLet me try writing the specification now.
+{self.close_think} Here is my specification:
 [PRECOND]""",
-        """\n\nOk let me take a step back and write the specification using a different approach than before.
-</think> My approach:
+            f"""\n\nOk let me take a step back and write the specification using a different approach than before.
+{self.close_think} My approach:
 [PRECOND]""",
-        """\n\nI should try a completely different formulation this time.
-</think> Alternative specification:
+            f"""\n\nI should try a completely different formulation this time.
+{self.close_think} Alternative specification:
 [PRECOND]""",
-    ]
+        ]
 
     def _build_force_spec_feedback(self) -> str:
         """Build the feedback string to force spec output. Rotates prompts for diversity."""
-        idx = self.force_count % len(self._FORCE_SPEC_VARIANTS)
-        return self._FORCE_SPEC_VARIANTS[idx]
+        variants = self._get_force_spec_variants()
+        idx = self.force_count % len(variants)
+        return variants[idx]
 
     def _build_diversity_feedback(self, compile_output: str) -> str:
         """
@@ -314,7 +320,7 @@ Do NOT repeat a similar approach. Use a fundamentally different formulation. Thi
         Verify the generated text.
         
         Two modes:
-        1. Force spec output: If K newlines reached and no spec yet, inject </think> + [PRECOND] prompt
+        1. Force spec output: If K newlines reached and no spec yet, inject the think-close tag + [PRECOND] prompt
         2. Verify spec: If [PRECOND]...[/PRECOND] and [POSTCOND]...[/POSTCOND] present, extract and compile
         
         Args:
@@ -340,7 +346,7 @@ Do NOT repeat a similar approach. Use a fundamentally different formulation. Thi
         # Stream from LLM to force spec output
         full_text = await self._stream_force_spec(step)
         full_text_with_precond = "[PRECOND]" + full_text
-        generated_spec = extract_spec_from_response(full_text_with_precond)
+        generated_spec = extract_spec_from_response(full_text_with_precond, self.open_think, self.close_think)
         
         if not generated_spec.get("precond") and not generated_spec.get("postcond"):
             print("[VerinaSpec] Forced spec generation but could not extract spec")
@@ -370,10 +376,10 @@ Do NOT repeat a similar approach. Use a fundamentally different formulation. Thi
             
             # Build escalating feedback based on how many times we've failed
             feedback = self._build_diversity_feedback(compile_output)
-            feedback += """
+            feedback += f"""
 <|im_end|>
 <|im_start|>assistant
-<think> It seems my specification failed to compile. I should analyze the error and try to fix it using a different approach.
+{self.open_think} It seems my specification failed to compile. I should analyze the error and try to fix it using a different approach.
 """
             async with self.lock:
                 print(f"[VerinaSpec] Verification #{current_verification}: Compilation FAILED after forcing spec (attempt {len(self.failed_attempts)})")
@@ -402,7 +408,7 @@ Do NOT repeat a similar approach. Use a fundamentally different formulation. Thi
 Your specification compiled successfully! Now give the final answer
 <|im_end|>
 <|im_start|>assistant
-<think> Good, the specification I gave compiled successfully. Now I am confident in my answer, so I should output it in the required format.
+{self.open_think} Good, the specification I gave compiled successfully. Now I am confident in my answer, so I should output it in the required format.
 """
         print(f"[VerinaSpec] Injecting success feedback with verified spec in user message")
         async with self.lock:
@@ -430,17 +436,17 @@ Your specification compiled successfully! Now give the final answer
         """
         Determine when to trigger verification.
         
-        Triggers: Every K newlines without </think> → force spec output
+        Triggers: Every K newlines without the think-close tag → force spec output
     
         Returns: (should_verify, text_to_verify)
         """
-        last_think_start = generated_text.rfind('<think>')
-        last_think_end = generated_text.rfind('</think>')
+        last_think_start = generated_text.rfind(self.open_think)
+        last_think_end = generated_text.rfind(self.close_think)
         in_think_block = last_think_start > last_think_end
 
         if in_think_block:
             # Count newlines only in the current think block
-            current_think_content = generated_text[last_think_start + 7:]  # 7 = len('<think>')
+            current_think_content = generated_text[last_think_start + len(self.open_think):]
             think_newlines = current_think_content.count('\n')
             
             # If this is a new think block, reset the tracking

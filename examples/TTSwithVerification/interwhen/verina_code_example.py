@@ -14,6 +14,7 @@ from pathlib import Path
 from typing import List, Tuple, Optional
 from interwhen.interject import stream_completion
 from interwhen.monitors import EATMonitor, StepVerifierVerinaMonitor
+from interwhen.utils.llm import get_think_tags
 from interwhen.utils.verina_code_example_utils import *
 
 logger = logging.getLogger(__name__)
@@ -227,6 +228,7 @@ if __name__ == "__main__":
     # Use models from args
     main_model = args.main_model
     earlystop_model = args.earlystop_model
+    think_tags = get_think_tags(main_model)
     
     # Setup output directories based on model name
     output_dirs = get_output_dirs(main_model)
@@ -315,6 +317,8 @@ if __name__ == "__main__":
                     k_steps=40,  # Force code after every K newlines
                     compile_timeout=120,
                     max_corrections=args.max_corrections,
+                    open_think=think_tags['open'],
+                    close_think=think_tags['close'],
                 ),
             ]
         else:
@@ -354,7 +358,7 @@ if __name__ == "__main__":
         # Save reasoning trace
         save_reasoning_trace(idx, data.data_id, prompt_with_answer, reason_dir)
         
-        generated_code = extract_code_from_response(answer)
+        generated_code = extract_code_from_response(answer, think_tags['open'], think_tags['close'])
         logger.info(f"Extracted code: {generated_code}")
         old_code = generated_code
         
