@@ -29,7 +29,7 @@ from typing import List, Tuple, Optional, Dict, Any
 
 from interwhen.interject import stream_completion
 from interwhen.monitors import EATMonitor, StepVerifierVerinaSpecMonitor
-from interwhen.utils.llm import get_think_tags
+from interwhen.utils.llm import init_llm_server, get_think_tags
 from interwhen.utils.verina_spec_example_utils import *
 
 logger = logging.getLogger(__name__)
@@ -84,27 +84,6 @@ _SCRIPT_DIR = Path(__file__).parent.resolve()
 VERINA_ROOT = (_SCRIPT_DIR / "../../../../verina").resolve()
 VERINA_DATASETS_PATH = VERINA_ROOT / "datasets" / "verina"
 LEAN_PLAYGROUND_DIR = VERINA_ROOT / "lean-playground"
-
-# LLM server setup
-
-def init_llm_server(modelname: str, max_tokens: int = 20480, port: int = 8000) -> dict:
-    """Initialize LLM server configuration"""
-    url = f"http://localhost:{port}/v1/completions"
-    payload = {
-        "model": modelname,
-        "max_tokens": max_tokens,
-        "top_k": 20,
-        "top_p": 0.95,
-        "min_p": 0.0,
-        "temperature": 0.6,
-        "stream": True,
-        "logprobs": 20,
-        "use_beam_search": False,
-        "prompt_cache": True,
-        "seed": 42,
-    }
-    headers = {"Content-Type": "application/json"}
-    return {"url": url, "payload": payload, "headers": headers}
 
 
 # Saving related utils
@@ -263,7 +242,7 @@ if __name__ == "__main__":
     print("=============testing lean compile=================")
     test_lean_compile()
     
-    llm_server = init_llm_server(main_model, max_tokens=20480, port=args.port)
+    llm_server = init_llm_server(main_model, context_length=20480, port=args.port)
     
     N = args.num_examples if args.num_examples > 0 else len(dataset)
     total = len(dataset)

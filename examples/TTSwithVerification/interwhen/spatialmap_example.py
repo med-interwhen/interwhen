@@ -21,7 +21,7 @@ from transformers import AutoTokenizer
 
 from interwhen import stream_completion
 from interwhen.monitors import ThinkingPhaseStepVerifierSpatialMapMonitor
-from interwhen.utils.llm import get_think_tags
+from interwhen.utils.llm import init_llm_server, get_think_tags
 
 logging.basicConfig(level=logging.INFO, format='%(message)s')
 logger = logging.getLogger(__name__)
@@ -117,27 +117,6 @@ def count_tokens(text: str, tokenizer) -> int:
     """Count the total number of tokens in the generated text using the tokenizer."""
     tokens = tokenizer.encode(text, add_special_tokens=False)
     return len(tokens)
-
-
-def init_llm_server(model_name, max_tokens=20480, port=8000):
-    """Initialize LLM server configuration."""
-    url = f"http://localhost:{port}/v1/completions"
-    payload = {
-        "model": model_name,
-        "max_tokens": max_tokens,
-        "top_k": 20,
-        "top_p": 0.95,
-        "min_p": 0.0,
-        "do_sample": True,
-        "temperature": 0.6,
-        "stream": True,
-        "logprobs": 20,
-        "use_beam_search": False,
-        "prompt_cache": True,
-        "seed": 42
-    }
-    headers = {"Content-Type": "application/json"}
-    return {"url": url, "payload": payload, "headers": headers}
 
 
 def save_prompt(idx, prompt_with_answer, reason_dir):

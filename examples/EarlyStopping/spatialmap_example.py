@@ -13,7 +13,7 @@ from transformers import AutoTokenizer
 
 from interwhen import stream_completion
 from interwhen.monitors import SimpleTextReplaceMonitor, KstableAnswerMCQMonitor, EATMonitor, DEERMonitor
-from interwhen.utils.llm import get_think_tags
+from interwhen.utils.llm import init_llm_server, get_think_tags
 import re
 
 # ============== MODEL CONFIGURATION ==============
@@ -69,25 +69,6 @@ logger = logging.getLogger(__name__)
 def load_maze_dataset(split="val"):
     ds = load_dataset("microsoft/VISION_LANGUAGE", "spatial_map_text_only", split=split)
     return ds
-
-def init_llm_server(modelname, max_tokens=200, port=8000): #
-    url = f"http://localhost:{port}/v1/completions"
-    payload = {
-        "model": modelname,
-        "max_tokens": max_tokens,
-        "top_k": 20,
-        "top_p": 0.95,
-        "min_p": 0.0,
-        "do_sample" : True,
-        "temperature": 0.6,
-        "stream": True,
-        "logprobs": 20,
-        "use_beam_search": False,
-        "prompt_cache": True,
-        "seed" : 42
-    }
-    headers = {"Content-Type": "application/json"}
-    return {"url": url, "payload": payload, "headers": headers}
 
 
 def build_prompt_from_example(example):
@@ -194,7 +175,7 @@ if __name__ == "__main__":
 
     dataset = load_maze_dataset()
 
-    llm_server = init_llm_server(main_model, max_tokens=32768)
+    llm_server = init_llm_server(main_model, context_length=32768)
 
     # Load tokenizer for accurate token counting
     logger.info(f"Loading tokenizer for {main_model}...")

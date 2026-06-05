@@ -12,7 +12,7 @@ from transformers import AutoTokenizer
 
 from interwhen import stream_completion
 from interwhen.monitors import SimpleTextReplaceMonitor, KstableAnswerGame24Monitor, EATMonitor, DEERMonitor
-from interwhen.utils.llm import get_think_tags
+from interwhen.utils.llm import init_llm_server, get_think_tags
 
 # ============== MODEL CONFIGURATION ==============
 # Change these model names to scale experiments easily
@@ -68,25 +68,6 @@ logger = logging.getLogger(__name__)
 def load_game24_dataset():
     ds = load_dataset("nlile/24-game", split="train")
     return ds
-
-def init_llm_server(modelname, max_tokens=200, port=8000):
-    url = f"http://localhost:{port}/v1/completions"
-    payload = {
-        "model": modelname,
-        "max_tokens": max_tokens,
-        "top_k": 20,
-        "top_p": 0.95,
-        "min_p": 0.0,
-        "do_sample" : True,
-        "temperature": 0.6,
-        "stream": True,
-        "logprobs": 20,
-        "use_beam_search": False,
-        "prompt_cache": True,
-        "seed" : 42
-    }
-    headers = {"Content-Type": "application/json"}
-    return {"url": url, "payload": payload, "headers": headers}
 
 
 def build_prompt(nums):
@@ -275,7 +256,7 @@ if __name__ == "__main__":
 
     dataset = load_game24_dataset()
 
-    llm_server = init_llm_server(main_model, max_tokens=32768, port=8000)
+    llm_server = init_llm_server(main_model, context_length=32768, port=8000)
 
     # Load tokenizer for accurate token counting
     logger.info(f"Loading tokenizer for {main_model}...")

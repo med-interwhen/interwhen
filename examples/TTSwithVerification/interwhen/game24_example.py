@@ -19,7 +19,7 @@ from transformers import AutoTokenizer
 
 from interwhen import stream_completion
 from interwhen.monitors import ThinkingPhaseStepVerifierGame24Monitor
-from interwhen.utils.llm import get_think_tags
+from interwhen.utils.llm import init_llm_server, get_think_tags
 
 # ============== MODEL CONFIGURATION ==============
 MAIN_MODEL = "Qwen/QwQ-32B"
@@ -72,26 +72,6 @@ def save_prompt(idx, prompt_with_answer, reason_dir):
         f.write(prompt_with_answer)
 
 logger = logging.getLogger(__name__)
-
-
-def init_llm_server(modelname, max_tokens=32768, port=8000):
-    url = f"http://localhost:{port}/v1/completions"
-    payload = {
-        "model": modelname,
-        "max_tokens": max_tokens,
-        "top_k": 20,
-        "top_p": 0.95,
-        "min_p": 0.0,
-        "do_sample": True,
-        "temperature": 0.6,
-        "stream": True,
-        "logprobs": 20,
-        "use_beam_search": False,
-        "prompt_cache": True,
-        "seed": 42
-    }
-    headers = {"Content-Type": "application/json"}
-    return {"url": url, "payload": payload, "headers": headers}
 
 
 def build_prompt(nums):
