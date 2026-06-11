@@ -525,7 +525,7 @@ if __name__ == "__main__":
     # Save results summary to a text file
     results_file = os.path.join(output_dirs["base"], f"EAT_{total_examples}examples_results.txt")
     with open(results_file, 'w') as f:
-        f.write(f"Maze Step Verification Results\n")
+        f.write(f"Maze Results\n")
         f.write(f"{'='*50}\n\n")
         f.write(f"Model: {args.model}\n")
         f.write(f"Number of Examples: {total_examples}\n")
