@@ -1,7 +1,7 @@
 <h1 align="center">interwhen</h1>
 
 <p align="center">
-   A Generalizable Framework for Steering Reasoning Models with  Test-time Verification
+   A Generalizable Framework for Steering Reasoning Models with Test-time Verification
 </p>
 
 <p align="center">
@@ -33,7 +33,7 @@ From a research perspective, interwhen makes the following contributions:
 
 - **A New Axis for Test-Time Scaling** — Introduces verifier compute as an additional dimension of scaling at inference time. Rather than scaling model size or sampling alone, performance can be improved by allocating compute to structured verification.
 
-- **Automatic Verifier Synthesis** — Provides a method for generating verifiers automatically from a given natural-language policy. We also propose a Lean-based variant that produces formal specifications, corresponding verifiers, and machine checked proofs of soundness and completeness of the verifiers. 
+- **Automatic Verifier Synthesis** — Provides a method for generating verifiers automatically from a given natural-language policy. We also propose a Lean-based variant that produces formal specifications, corresponding verifiers, and machine-checked proofs of soundness and completeness of the verifiers. 
 
 - **A Testbed for Verifier Development** — Enables systematic evaluation of verifier designs at inference time before incorporating them into training objectives (e.g., as reward models or critics).
 
@@ -75,7 +75,7 @@ A demo on the ZebraLogic dataset. The task is to find the correct assignments gi
 - [Installation](#installation)
 - [Verifiable Reasoning in Three Lines](#verifiable-reasoning-in-three-lines)
 - [Examples](#examples)
-- [Available Monitors](#available-monitors-and-verifiers)
+- [Available Monitors and Verifiers](#available-monitors-and-verifiers)
 - [Creating Custom Verifiers and Monitors](#creating-custom-verifiers-and-monitors)
 - [How It Works](#how-it-works)
 - [Evaluation](#evaluation)
@@ -89,7 +89,6 @@ interwhen changes the inference pipeline of a language model by creating an auxi
 
 1. **Policy Compliant Agentic Reasoning**. 
 interwhen verifies intermediate reasoning states, tool-use decisions, and tool-responses before the model reaches a final answer, with the aim of ensuring that the actions taken by the agent are compliant with the policy provided. This is useful for agentic workflows where early mistakes can propagate into irreversible tool calls or invalid task outcomes, and hence process verification is essential.
-
 
 2. **Verification During Generation**. interwhen verifies reasoning traces as they are produced, without requiring external step extraction or structured decomposition. This allows the model to retain flexible reasoning strategies while remaining subject to correctness constraints.
 

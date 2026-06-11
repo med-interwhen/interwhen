@@ -1,0 +1,252 @@
+{# ============================================================================
+   LeanMain.lean — long-lived stdin/stdout policy-check daemon.
+
+   Rendered from manifest.json by generate_runner.py.  Adding a rule means
+   adding an entry to manifest.rules; this template regenerates the
+   ruleTable and DB parsers without any LLM call.
+
+   The protocol (per request line):
+
+     {"id":"…", "rule":"<check_name>", "tool_args":{…},
+      "db_snapshot":{ … per manifest.agent_state_fields … }}
+   ============================================================================ #}
+/-
+  LeanMain.lean — auto-generated from manifest.json.
+-/
+import PolicyChecker
+import Lean.Data.Json
+
+open Lean {{ manifest.namespace }}
+
+namespace PolicyDaemon
+
+/-! ## JSON helpers -/
+
+def getStr  (j : Json) (k : String) : String :=
+  (j.getObjValAs? String k).toOption.getD ""
+
+def getNat  (j : Json) (k : String) : Nat :=
+  (j.getObjValAs? Nat k).toOption.getD 0
+
+def getInt  (j : Json) (k : String) : Int :=
+  (j.getObjValAs? Int k).toOption.getD 0
+
+def getBool (j : Json) (k : String) : Bool :=
+  (j.getObjValAs? Bool k).toOption.getD false
+
+def getArr  (j : Json) (k : String) : Array Json :=
+  match j.getObjVal? k with
+  | .ok (Json.arr xs) => xs
+  | _                 => #[]
+
+def getObj? (j : Json) (k : String) : Option Json :=
+  (j.getObjVal? k).toOption
+
+def jsonStr (j : Json) : String :=
+  match j with | .str s => s | _ => ""
+
+def jsonStringPair? (j : Json) : Option (String × String) :=
+  match j with
+  | Json.arr xs =>
+      match xs.toList with
+      | [Json.str k, Json.str v] => some (k, v)
+      | _                       => none
+  | _ => none
+
+/-! ## ID constructors -/
+
+{%- for id_type in manifest.id_types %}
+def mk{{ id_type }} (s : String) : {{ id_type }} := { val := s }
+{%- endfor %}
+
+/-! ## Enum parsers -/
+
+{%- for enum in manifest.enums %}
+def parse{{ enum.name }} : String → {{ enum.name }}
+{%- for policy_str, ctor in enum.string_map.items() %}
+  | "{{ policy_str }}" => .{{ ctor }}
+{%- endfor %}
+  | _                  => .{{ enum.ctors[0] }}
+{%- endfor %}
+
+{# ---------------------------------------------------------------------- #}
+{# Record builders — one per data_model.  We assume one-to-one snake_case  #}
+{# field names in the JSON snapshot.  The manifest field list dictates    #}
+{# order and types.                                                       #}
+{# ---------------------------------------------------------------------- #}
+
+{%- macro field_getter(name, lean_type, json_key=None) -%}
+{%- set snake = json_key if json_key else camel_to_snake(name) -%}
+{%- if lean_type in manifest.id_types %}mk{{ lean_type }} (getStr j "{{ snake }}")
+{%- elif lean_type in enum_names %}parse{{ lean_type }} (getStr j "{{ snake }}")
+{%- elif lean_type == "String" %}getStr j "{{ snake }}"
+{%- elif lean_type == "Nat" %}getNat j "{{ snake }}"
+{%- elif lean_type == "Int" %}getInt j "{{ snake }}"
+{%- elif lean_type == "Bool" %}getBool j "{{ snake }}"
+{%- elif lean_type.startswith("List ") -%}
+{%- set inner = lean_type[5:] -%}
+{%- if inner in manifest.id_types %}(getArr j "{{ snake }}").toList.map (fun x => mk{{ inner }} (jsonStr x))
+{%- else %}[]  -- TODO: list-of-{{ inner }} parsing not generated
+{%- endif -%}
+{%- else %}default  -- TODO: parser for {{ lean_type }}
+{%- endif -%}
+{%- endmacro %}
+
+/-! ## Record builders -/
+
+{%- for dm in manifest.data_models %}
+def parse{{ dm.name }} (j : Json) : {{ dm.name }} :=
+  {
+    {%- for fld in dm.fields %}
+    {%- set jkey = fld[2] if fld|length > 2 else None %}
+    {{ fld[0] }} := {{ field_getter(fld[0], fld[1], jkey) }}{{ "," if not loop.last else "" }}
+    {%- endfor %}
+  }
+{%- endfor %}
+
+/-! ## AgentState parser -/
+
+{%- set data_model_names = manifest.data_models | map(attribute='name') | list %}
+
+def parseAgentState (snap : Json) : AgentState :=
+  {
+    {%- for fld in manifest.agent_state_fields %}
+    {%- set lean_name = fld[0] %}
+    {%- set lean_type = fld[1] %}
+    {%- set json_key  = fld[2] %}
+    {%- if lean_type == "List (String × String)" or lean_type == "List (String \u00d7 String)" %}
+    {{ lean_name }} := (getArr snap "{{ json_key }}").toList.filterMap jsonStringPair?{{ "," if not loop.last else "" }}
+    {%- elif lean_type.startswith("List ") %}
+    {%- set inner = lean_type[5:] %}
+    {%- if inner in data_model_names %}
+    {{ lean_name }} := (getArr snap "{{ json_key }}").toList.map parse{{ inner }}{{ "," if not loop.last else "" }}
+    {%- else %}
+    {{ lean_name }} := []  -- TODO: no parser for List {{ inner }}{{ "," if not loop.last else "" }}
+    {%- endif %}
+    {%- elif lean_type == "Option CustomerId" or (lean_type.startswith("Option ") and lean_type[7:] in manifest.id_types) %}
+    {%- set inner = lean_type[7:] %}
+    {{ lean_name }} :=
+      (match snap.getObjVal? "{{ json_key }}" with
+       | .ok (.str s) => if s = "" then none else some (mk{{ inner }} s)
+       | _            => none){{ "," if not loop.last else "" }}
+    {%- elif lean_type == "Int" %}
+    {{ lean_name }} := getInt snap "{{ json_key }}"{{ "," if not loop.last else "" }}
+    {%- elif lean_type == "Nat" %}
+    {{ lean_name }} := getNat snap "{{ json_key }}"{{ "," if not loop.last else "" }}
+    {%- elif lean_type == "Bool" %}
+    {{ lean_name }} := getBool snap "{{ json_key }}"{{ "," if not loop.last else "" }}
+    {%- elif lean_type == "String" %}
+    {{ lean_name }} := getStr snap "{{ json_key }}"{{ "," if not loop.last else "" }}
+    {%- else %}
+    {{ lean_name }} := default  -- TODO: parser for {{ lean_type }}{{ "," if not loop.last else "" }}
+    {%- endif %}
+    {%- endfor %}
+  }
+
+{# ---------------------------------------------------------------------- #}
+{# Hyp parser                                                             #}
+{# ---------------------------------------------------------------------- #}
+{%- if manifest.hyp_fields %}
+
+def parseHyp (j : Json) : Hyp :=
+  {
+    {%- for h in manifest.hyp_fields %}
+    {{ h.name }} := getBool j "{{ h.name }}"{{ "," if not loop.last else "" }}
+    {%- endfor %}
+  }
+{%- else %}
+
+def parseHyp (_j : Json) : Hyp := default
+{%- endif %}
+
+/-! ## Rule registry -/
+
+abbrev Rule := AgentState → Json → Option String
+
+{# Inline binding helper per arg_from #}
+{%- macro arg_bind(arg) -%}
+{%- set name = arg[0] -%}
+{%- set path = arg[1] -%}
+{%- set typ  = arg[2] -%}
+{%- if path == "state" %}let {{ name }} := s
+{%- elif path == "result" %}let {{ name }} := getStr a "result"
+{%- elif path == "hyp" or typ == "Hyp" %}let {{ name }} := parseHyp ((getObj? a "hyp").getD (Json.mkObj []))
+{%- elif path.startswith("args.") %}
+{%- set key = path[5:] -%}
+{%- if typ in manifest.id_types %}let {{ name }} := mk{{ typ }} (getStr a "{{ key }}")
+{%- elif typ == "Nat" %}let {{ name }} := getNat a "{{ key }}"
+{%- elif typ == "Int" %}let {{ name }} := getInt a "{{ key }}"
+{%- elif typ == "Bool" %}let {{ name }} := getBool a "{{ key }}"
+{%- else %}let {{ name }} := getStr a "{{ key }}"
+{%- endif %}
+{%- elif path.startswith("hyp.") %}
+{%- set hname = path[4:] -%}
+let {{ name }} := (parseHyp ((getObj? a "hyp").getD (Json.mkObj []))).{{ hname }}
+{%- else %}let {{ name }} := getStr a "{{ path }}"  -- TODO: unrecognised arg_from {{ path }}
+{%- endif -%}
+{%- endmacro %}
+
+def ruleTable : List (String × Rule) := [
+{%- for rule in manifest.rules %}
+{%- set lean_prefix = "check_result_" if rule.phase == "post" else "check_" %}
+{%- set fb_prefix = "feedback_result_" if rule.phase == "post" else "feedback_" %}
+  ("{{ lean_prefix }}{{ rule.name }}", fun s a =>
+    {%- for arg in rule.args_from %}
+    {{ arg_bind(arg) }}
+    {%- endfor %}
+    if {{ lean_prefix }}{{ rule.name }} {{ rule.feedback_args | join(' ') if rule.feedback_args else (rule.inputs | map(attribute=0) | join(' ')) }} then none
+    else some ({{ fb_prefix }}{{ rule.name }} {{ rule.feedback_args | join(' ') if rule.feedback_args else (rule.inputs | map(attribute=0) | join(' ')) }})){{ "," if not loop.last else "" }}
+{%- endfor %}
+]
+
+def runRule (rule : String) (s : AgentState) (args : Json) : Option String :=
+  (ruleTable.lookup rule).bind (fun f => f s args)
+
+/-! ## Request / response -/
+
+def mkResponse (id : Json) (verdict : Option String) : Json :=
+  Json.mkObj [
+    ("id",      id),
+    ("ok",      .bool true),
+    ("verdict", verdict.map Json.str |>.getD .null)
+  ]
+
+def mkErrorResponse (id : Json) (err : String) : Json :=
+  Json.mkObj [
+    ("id",    id),
+    ("ok",    .bool false),
+    ("error", .str err)
+  ]
+
+def handleRequest (j : Json) : Json :=
+  let id    := (j.getObjVal? "id").toOption.getD .null
+  let rule  := getStr j "rule"
+  let args  := (getObj? j "tool_args").getD (Json.mkObj [])
+  let snap  := (getObj? j "db_snapshot").getD (Json.mkObj [])
+  mkResponse id (runRule rule (parseAgentState snap) args)
+
+partial def loop : IO Unit := do
+  let stdin  ← IO.getStdin
+  let stdout ← IO.getStdout
+  let stderr ← IO.getStderr
+  let rec go : IO Unit := do
+    let line ← stdin.getLine
+    if line.isEmpty then return  -- EOF
+    let trimmed := line.trimAscii.toString
+    if trimmed.isEmpty then go else
+    match Json.parse trimmed with
+    | .error e =>
+        stdout.putStr (Json.compress (mkErrorResponse .null s!"json parse error: {e}") ++ "\n")
+        stdout.flush
+        go
+    | .ok j =>
+        if (j.getObjValAs? Bool "shutdown").toOption == some true then return
+        stdout.putStr (Json.compress (handleRequest j) ++ "\n")
+        stdout.flush
+        go
+  go
+  stderr.putStr "policy-daemon: shutting down\n"
+
+end PolicyDaemon
+
+def main : IO Unit := PolicyDaemon.loop

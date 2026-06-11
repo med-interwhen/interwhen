@@ -1,0 +1,176 @@
+{# ============================================================================
+   telecom_glue_spec.py — auto-generated from manifest.json.
+   This template only renders the per-domain wiring (LEAN_RULE_SPECS, _snapshot_db field list, Hyp questions).
+   ============================================================================ #}
+"""{{ manifest.domain }}_glue_spec.py — auto-generated.
+
+Generated from manifest.json by generate_glue.
+
+Public API 
+
+    check_all(tool_name, tool_args, conversation, db, **kwargs) -> str | list[str] | None
+    check_all_results(tool_name, tool_args, result_content, db=None, **kwargs) -> list[str]
+"""
+
+from __future__ import annotations
+
+from glue_runtime import (
+    GlueConfig,
+    _LEAN_UNAVAILABLE,
+    LeanRunner,
+    build_db_snapshot,
+    check_all as _check_all_impl,
+    check_all_results as _check_all_results_impl,
+    discharge_hypotheses,
+    dump_stats,
+    get_rule_stats,
+)
+
+
+# ---- Per-domain wiring --------------------------------------------------
+
+DOMAIN = "{{ manifest.domain }}"
+
+
+# Field schema for the db_snapshot wire format.
+# Each entry: (snake_case json key, dotted attribute path on the runtime
+# db object, kind: 'list' | 'scalar' | 'identified' | 'date' | 'string').
+SNAPSHOT_FIELDS: list[tuple[str, str, str]] = [
+{%- for fld in manifest.agent_state_fields %}
+{%- set lean_name = fld[0] %}
+{%- set lean_type = fld[1] %}
+{%- set json_key  = fld[2] %}
+    ("{{ json_key }}", "{{ camel_to_snake(lean_name) }}",
+{%- if lean_type.startswith("List ") %} "list"
+{%- elif lean_type.startswith("Option ") %} "identified"
+{%- elif lean_type in ("Int",) %} "date"
+{%- elif lean_type in ("Nat",) %} "scalar"
+{%- elif lean_type == "Bool" %} "scalar"
+{%- else %} "string"
+{%- endif %}),
+{%- endfor %}
+]
+
+
+# Rule specs — driven entirely by manifest.rules.
+LEAN_RULE_SPECS: list[dict] = [
+{%- for rule in manifest.rules if rule.phase == "pre" and rule.tool %}
+{%- set ns = namespace(needs_hyp=false) %}
+{%- for arg in rule.args_from %}
+{%- if arg[1] == "hyp" or arg[1].startswith("hyp.") or arg[2] == "Hyp" %}
+{%- set ns.needs_hyp = true %}
+{%- endif %}
+{%- endfor %}
+    {"tool": "{{ rule.tool }}", "rule": "check_{{ rule.name }}", "needs_hyp": {{ "True" if ns.needs_hyp else "False" }}},
+{%- endfor %}
+]
+
+LEAN_POST_RULE_SPECS: list[dict] = [
+{%- for rule in manifest.rules if rule.phase == "post" and rule.tool %}
+{%- set ns = namespace(needs_hyp=false) %}
+{%- for arg in rule.args_from %}
+{%- if arg[1] == "hyp" or arg[1].startswith("hyp.") or arg[2] == "Hyp" %}
+{%- set ns.needs_hyp = true %}
+{%- endif %}
+{%- endfor %}
+    {"tool": "{{ rule.tool }}", "rule": "check_result_{{ rule.name }}", "needs_hyp": {{ "True" if ns.needs_hyp else "False" }}},
+{%- endfor %}
+]
+
+
+# SLM hypotheses — questions asked once per turn and shipped as `hyp` blob.
+HYP_QUESTIONS: dict[str, str] = {
+{%- for h in manifest.hyp_fields %}
+    "{{ h.name }}": {{ h.slm_question | tojson }},
+{%- endfor %}
+}
+
+
+# Tools whose PRE rules consume a Hyp argument.  When such a tool is
+# checked, the runtime discharges all hypotheses (one SLM call per
+# distinct question) and ships the answers under tool_args["hyp"].
+PRE_TOOLS_NEED_HYP: set[str] = {
+{%- set _hyp_tools = [] %}
+{%- for rule in manifest.rules if rule.phase == "pre" and rule.tool %}
+{%- for arg in rule.args_from %}
+{%- if (arg[1] == "hyp" or arg[1].startswith("hyp.") or arg[2] == "Hyp") and rule.tool not in _hyp_tools %}
+{%- set _ = _hyp_tools.append(rule.tool) %}
+    "{{ rule.tool }}",
+{%- endif %}
+{%- endfor %}
+{%- endfor %}
+}
+
+
+# Per-record field aliases, applied AFTER snapshot extraction.
+# Useful when the runtime DB uses a different key than the spec.
+SNAPSHOT_REMAP: dict = {{ manifest.snapshot_remap | tojson }}
+
+
+# Optional Python fallback rules.  These run AFTER all Lean rules and
+# are ideal for empirical / heuristic checks that don't fit the
+# decidable triplet model.  Wire them by editing the import below; the
+# auto-generator never overwrites this stanza if you replace it with
+# your own list (just remove the `# AUTO-GLUE-PY-HOOK` comment).
+#
+# AUTO-GLUE-PY-HOOK
+try:  # pragma: no cover
+    from tau2.verifier.{{ manifest.domain }}_python_rules import (
+        PYTHON_PRE_RULES, PYTHON_POST_CHECKS,
+    )
+except ImportError:
+    PYTHON_PRE_RULES: list = []
+    PYTHON_POST_CHECKS: list = []
+
+
+# Action → tool-args extraction.  The runner doesn't need this; it's here
+# so callers can introspect what actions the manifest declares.
+ACTION_ARGS: dict[str, list[tuple[str, str, str]]] = {
+{%- for act in manifest.actions %}
+    "{{ act.tool }}": [
+{%- for arg in act.args %}
+        ("{{ arg[0] }}", "{{ arg[1] }}", "{{ arg[2] }}"),
+{%- endfor %}
+    ],
+{%- endfor %}
+}
+
+
+# ---- Public API ---------------------------------------------------------
+
+_CONFIG = GlueConfig(
+    domain=DOMAIN,
+    snapshot_fields=SNAPSHOT_FIELDS,
+    pre_rules=LEAN_RULE_SPECS,
+    post_rules=LEAN_POST_RULE_SPECS,
+    hyp_questions=HYP_QUESTIONS,
+    snapshot_remap=SNAPSHOT_REMAP,
+    python_pre_rules=PYTHON_PRE_RULES,
+    python_post_checks=PYTHON_POST_CHECKS,
+    pre_tools_need_hyp=PRE_TOOLS_NEED_HYP,
+)
+
+
+def check_all(tool_name, tool_args, conversation, db, **kwargs):
+    return _check_all_impl(_CONFIG, tool_name, tool_args, conversation, db, **kwargs)
+
+
+def check_all_results(tool_name, tool_args, result_content, db=None, **kwargs):
+    return _check_all_results_impl(
+        _CONFIG, tool_name, tool_args, result_content, db=db, **kwargs
+    )
+
+
+__all__ = [
+    "DOMAIN",
+    "SNAPSHOT_FIELDS",
+    "LEAN_RULE_SPECS",
+    "LEAN_POST_RULE_SPECS",
+    "HYP_QUESTIONS",
+    "ACTION_ARGS",
+    "LeanRunner",
+    "check_all",
+    "check_all_results",
+    "get_rule_stats",
+    "dump_stats",
+]
