@@ -90,7 +90,6 @@ interwhen changes the inference pipeline of a language model by creating an auxi
 1. **Policy Compliant Agentic Reasoning**. 
 interwhen verifies intermediate reasoning states, tool-use decisions, and tool-responses before the model reaches a final answer, with the aim of ensuring that the actions taken by the agent are compliant with the policy provided. This is useful for agentic workflows where early mistakes can propagate into irreversible tool calls or invalid task outcomes, and hence process verification is essential.
 
-
 2. **Verification During Generation**. interwhen verifies reasoning traces as they are produced, without requiring external step extraction or structured decomposition. This allows the model to retain flexible reasoning strategies while remaining subject to correctness constraints.
 
 3. **Asynchronous and Efficient Execution**. Verifiers are executed asynchronously and intervene only when violations are detected, minimizing inference overhead while preserving responsiveness.
