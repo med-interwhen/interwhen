@@ -1,12 +1,12 @@
-"""The content of this file is exactly the same as that in the original tau2bench repo (https://github.com/thu-coai/Agent-SafetyBench), at
-tau2-bench/src/tau2/domains/telecom/environment.py, barring the following changes:
+"""The content of this file is exactly the same as that in the original Agent-SafetyBench repo (https://github.com/thu-coai/Agent-SafetyBench), at
+Agent-SafetyBench/score/eval_with_shield.py, barring the following changes:
 
 1. Added a function strip_blocked_calls to remove synthetic messages injected by safety mechanisms
 2. Modified format_input_dialog to use the stripped trajectory for formatting the output trace, which is fed to the shield for evaluation. 
 3. removed most of the caching login in load_cache_data, since we are not using caching for the experiments. The function now just returns empty results and existing_ids.
 4. modified run_each_file to persist the actually-scored (stripped) trajectory for each example
 """
-
+    
 import os
 import re
 import json

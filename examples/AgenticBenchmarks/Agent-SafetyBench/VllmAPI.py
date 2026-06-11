@@ -1,12 +1,13 @@
 """
 Content of this file is taken from the original code files in the Agent-SafetyBench repo (https://github.com/thu-coai/Agent-SafetyBench), at
 Agent-SafetyBench/evaluation/model_api/QwenAPI.py and Agent-SafetyBench/evaluation/model_api/OpenaiAPI.py.
-We made some changes to accommodate VLLM usage.
+We made some changes to accommodate VLLM usage. This file helps the user use VLLM to serve the LLM backbone for the agent.
 
 Most of the VllmAPI.generate_response code is verbatim from QwenAPI. We made some changes to incorporate reasoning models.
 Most of the VllmAPI.response code is verbatim from OpenaiAPI, with some changes.
 
-"""from openai import OpenAI
+"""
+from openai import OpenAI
 from transformers import AutoTokenizer
 import time
 import json

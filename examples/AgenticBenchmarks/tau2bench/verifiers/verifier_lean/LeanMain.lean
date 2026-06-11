@@ -5,8 +5,7 @@
 
   Scope: only the 9 DB-driven proven checks from PolicyChecker.lean.
   Everything else (POST coaching, empirical arg-matching, hypothesis
-  gates) is handled in Python (telecom_python_rules.py) — Lean adds no
-  proof-checked value to those, and putting them here was bloat.
+  gates) is handled in Python (telecom_python_rules.py)
 
   Protocol (line-delimited JSON):
 

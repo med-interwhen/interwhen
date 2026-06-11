@@ -145,7 +145,7 @@ def slm_extract(question: str, conversation: list[dict], max_tokens: int = 256) 
 
     Returns
     -------
-    str  –  The SLM's answer (stripped).
+    str  -  The SLM's answer (stripped).
     """
     # Build a compact transcript for the SLM
     transcript_lines = []

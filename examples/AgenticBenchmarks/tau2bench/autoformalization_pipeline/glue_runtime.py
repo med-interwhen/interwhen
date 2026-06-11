@@ -198,7 +198,6 @@ class LeanRunner:
 
 
 #  JSON coercion
-
 def _json_default(o: Any) -> Any:
     if isinstance(o, Enum):
         return o.value
@@ -260,8 +259,8 @@ class GlueConfig:
     #   post signature: (tool_name, tool_args, result_content, db=None, **kw) -> str|None
     python_pre_rules: list = field(default_factory=list)
     python_post_checks: list = field(default_factory=list)
-    # Tools whose PRE rules use a Hyp argument; for those we discharge
-    # SLM hypotheses up front and ship the answers in tool_args["hyp"].
+    # Tools whose PRE rules use a Hyp argument; A Hyp (hypothesis) is an argument derived by asking an SLM a question
+    # We propagate the answers in tool_args["hyp"].
     pre_tools_need_hyp: set = field(default_factory=set)
 
 
@@ -568,8 +567,7 @@ def _infer_identified_customer(conversation: list) -> Optional[str]:
     return last_cid
 
 
-#  Hypothesis discharge (SLM)
-
+#  Ask the SLM each declared hypothesis question
 def discharge_hypotheses(
     cfg: GlueConfig,
     conversation: list,
@@ -731,8 +729,6 @@ def check_all(cfg: GlueConfig, tool_name, tool_args, conversation, db, **kwargs)
         if arg_identity is not None:
             db_snap["identified_customer"] = arg_identity
 
-    # If any PRE rule for this tool needs the Hyp blob, discharge once and
-    # ship under tool_args["hyp"].
     pre_args = dict(tool_args or {})
     # Round float tool-arg values that Lean expects as Nat (e.g. gb_amount).
     for k in _NAT_TOOL_ARG_KEYS:

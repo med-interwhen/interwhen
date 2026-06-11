@@ -21,11 +21,9 @@ from typing import Any
 
 logger = logging.getLogger(__name__)
 
-# ---------------------------------------------------------------------------
 # SLM client – uses the same vLLM / OpenAI‑compatible endpoint as the agent
 # but with a small, fast model.  Falls back to the main model if no separate
 # SLM endpoint is configured.
-# ---------------------------------------------------------------------------
 
 _SLM_BASE = os.environ.get("SLM_API_BASE", os.environ.get("OPENAI_API_BASE", "http://localhost:8000/v1"))
 _SLM_KEY = os.environ.get("SLM_API_KEY", os.environ.get("OPENAI_API_KEY", "dummy"))
@@ -147,7 +145,7 @@ def slm_extract(question: str, conversation: list[dict], max_tokens: int = 256) 
 
     Returns
     -------
-    str  –  The SLM's answer (stripped).
+    str  -  The SLM's answer (stripped).
     """
     # Build a compact transcript for the SLM
     transcript_lines = []
