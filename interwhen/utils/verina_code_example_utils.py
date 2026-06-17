@@ -283,10 +283,16 @@ Provide ONLY the function body expression wrapped in [CODE]...[/CODE] tags."""
     return system_prompt, user_prompt
 
 
-def build_full_prompt(data: BenchmarkData) -> str:
-    """Build the full prompt string for the LLM"""
+def build_full_prompt(data: BenchmarkData, tokenizer) -> str:
+    """Build the full prompt string for the LLM using the model's chat template."""
     system_prompt, user_prompt = build_code_gen_prompt(data)
-    return f"<|im_start|>system\n{system_prompt}<|im_end|>\n<|im_start|>user\n{user_prompt}<|im_end|>\n<|im_start|>assistant\n"
+    return tokenizer.apply_chat_template(
+        [{"role": "system", "content": system_prompt},
+         {"role": "user", "content": user_prompt}],
+        tokenize=False,
+        add_generation_prompt=True,
+        enable_thinking=True,
+    )
 
 # Code Extraction and Eval
 def strip_function_definition(code: str) -> str:

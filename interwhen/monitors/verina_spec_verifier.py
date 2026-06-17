@@ -13,6 +13,7 @@ from typing import Tuple, Optional, Dict, Any
 import copy
 import httpx
 from interwhen.utils.verina_verifier_utils import *
+from interwhen.utils.llm import render_user_turn, get_eot_token
 from .base import VerifyMonitor
 
 #Paths
@@ -45,8 +46,11 @@ class StepVerifierVerinaSpecMonitor(VerifyMonitor):
         async_execution: bool = True,
         open_think: str = "<think>",
         close_think: str = "</think>",
+        tokenizer=None,
     ):
         super().__init__(name)
+        if tokenizer is None:
+            raise ValueError("StepVerifierVerinaSpecMonitor requires a tokenizer")
         self.task_data = task_data
         self.llm_server = llm_server
         self.prompt = prompt
@@ -56,6 +60,9 @@ class StepVerifierVerinaSpecMonitor(VerifyMonitor):
         self.async_execution = async_execution
         self.open_think = open_think
         self.close_think = close_think
+        # Tokenizer used to render mid-stream user turns via the model's own chat
+        # template (see interwhen.utils.llm.render_user_turn).
+        self.tokenizer = tokenizer
         self.max_corrections = max_corrections
         self.num_corrections = 0
         
@@ -133,19 +140,15 @@ class StepVerifierVerinaSpecMonitor(VerifyMonitor):
             print(f"[VerinaSpec Final] Compilation failed (attempt {attempt + 1}), retrying...")
             
             # Build retry prompt with error feedback
-            error_feedback = f"""
-<|im_end|>
-<|im_start|>user
-The specification you gave failed with error:
+            error_feedback = self._user_turn(
+                f"""The specification you gave failed with error:
 {clean_compile_output(compile_output)}
 
 Please fix the error and provide the corrected specification. Think through the problem carefully, then output your solution with [PRECOND]...[/PRECOND] and [POSTCOND]...[/POSTCOND] tags.
 
-{LEAN4_API_REFERENCE}
-<|im_end|>
-<|im_start|>assistant
-{self.open_think}
-"""
+{LEAN4_API_REFERENCE}""",
+                assistant_seed=self.open_think,
+            )
             retry_prompt = current_prompt + error_feedback
             
             # Call LLM for retry
@@ -154,7 +157,7 @@ Please fix the error and provide the corrected specification. Think through the 
                 payload["prompt"] = retry_prompt
                 payload["max_tokens"] = 2048
                 payload["stream"] = False
-                payload["stop"] = ["[/POSTCOND]", "</s>", "<|im_end|>"]
+                payload["stop"] = ["[/POSTCOND]", "</s>", self._eot_token]
                 
                 headers = copy.deepcopy(self.llm_server.get("headers", {}))
                 url = self.llm_server["url"]
@@ -184,6 +187,21 @@ Please fix the error and provide the corrected specification. Think through the 
         """Count the number of newlines in text."""
         return text.count('\n')
 
+    def _user_turn(self, content: str, assistant_seed: str = "") -> str:
+        """Render a mid-stream user turn to append to the running generation.
+
+        Closes the current assistant turn, adds a user message with ``content``,
+        and reopens an assistant turn seeded with ``assistant_seed`` (e.g. the
+        thinking-open tag) — using the model's own chat template, so no ChatML is
+        hardcoded.
+        """
+        return render_user_turn(self.tokenizer, content, assistant_seed)
+
+    @property
+    def _eot_token(self) -> str:
+        """The model's end-of-turn token (e.g. ChatML ``<|im_end|>``)."""
+        return get_eot_token(self.tokenizer)
+
     def _get_force_spec_variants(self):
         return [
             f"""\n\nWait, let me now output the specification as per my current understanding, so that the user can give feedback.
@@ -208,7 +226,8 @@ Please fix the error and provide the corrected specification. Think through the 
 
     def _build_diversity_feedback(self, compile_output: str) -> str:
         """
-        Build feedback that escalates diversity with each failed attempt.
+        Build the user-message *content* that escalates diversity with each
+        failed attempt (chat turn tokens are added by the caller via _user_turn).
         
         - Attempt 1: Just show the error and ask to fix
         - Attempt 2+: Show error + all previous failed approaches, explicitly
@@ -219,10 +238,7 @@ Please fix the error and provide the corrected specification. Think through the 
 
         if n_failures <= 1:
             # First failure: straightforward fix request
-            return f"""
-<|im_end|>
-<|im_start|>user
-The specification you gave failed with error:
+            return f"""The specification you gave failed with error:
 {cleaned_error}
 
 Please fix the error. Your specification should compile.
@@ -234,10 +250,7 @@ Please fix the error. Your specification should compile.
         for i, (spec_snip, err_snip) in enumerate(self.failed_attempts[:-1], 1):
             prev_section += f"\n--- Failed Attempt {i} ---\n{spec_snip}\nError: {err_snip}\n"
 
-        return f"""
-<|im_end|>
-<|im_start|>user
-The specification you gave failed with error:
+        return f"""The specification you gave failed with error:
 {cleaned_error}
 
 You have now failed {n_failures} time(s). Here are your previous failed attempts:
@@ -341,7 +354,7 @@ Do NOT repeat a similar approach. Use a fundamentally different formulation. Thi
 
         async with self.lock:
             self.force_count += 1
-        print(f"[VerinaSpec] Forcing spec output after {self._count_newlines(step)} newlines (force #{self.force_count})")
+        # print(f"[VerinaSpec] Forcing spec output after {self._count_newlines(step)} newlines (force #{self.force_count})")
         
         # Stream from LLM to force spec output
         full_text = await self._stream_force_spec(step)
@@ -375,14 +388,12 @@ Do NOT repeat a similar approach. Use a fundamentally different formulation. Thi
             complete_generated = force_prompt + full_text
             
             # Build escalating feedback based on how many times we've failed
-            feedback = self._build_diversity_feedback(compile_output)
-            feedback += f"""
-<|im_end|>
-<|im_start|>assistant
-{self.open_think} It seems my specification failed to compile. I should analyze the error and try to fix it using a different approach.
-"""
+            feedback = self._user_turn(
+                self._build_diversity_feedback(compile_output),
+                assistant_seed=f"{self.open_think} It seems my specification failed to compile. I should analyze the error and try to fix it using a different approach.\n",
+            )
             async with self.lock:
-                print(f"[VerinaSpec] Verification #{current_verification}: Compilation FAILED after forcing spec (attempt {len(self.failed_attempts)})")
+                # print(f"[VerinaSpec] Verification #{current_verification}: Compilation FAILED after forcing spec (attempt {len(self.failed_attempts)})")
                 self.num_corrections += 1
                 # Progressive thinking budget: give more room on retries
                 self.k_steps = self.base_k_steps
@@ -394,7 +405,7 @@ Do NOT repeat a similar approach. Use a fundamentally different formulation. Thi
             return full_text, feedback
         
         # Compilation succeeded — mark success
-        print(f"[VerinaSpec] Verification #{current_verification}: Compilation SUCCESS after forcing spec")
+        # print(f"[VerinaSpec] Verification #{current_verification}: Compilation SUCCESS after forcing spec")
         self.success_found = True
         self.verified_spec = generated_spec
         
@@ -402,14 +413,10 @@ Do NOT repeat a similar approach. Use a fundamentally different formulation. Thi
         force_prompt = self._build_force_spec_feedback()
         complete_generated = force_prompt + full_text
 
-        success_feedback = f"""
-<|im_end|>
-<|im_start|>user
-Your specification compiled successfully! Now give the final answer
-<|im_end|>
-<|im_start|>assistant
-{self.open_think} Good, the specification I gave compiled successfully. Now I am confident in my answer, so I should output it in the required format.
-"""
+        success_feedback = self._user_turn(
+            "Your specification compiled successfully! Now give the final answer",
+            assistant_seed=f"{self.open_think} Good, the specification I gave compiled successfully. Now I am confident in my answer, so I should output it in the required format.\n",
+        )
         print(f"[VerinaSpec] Injecting success feedback with verified spec in user message")
         async with self.lock:
             if not event.is_set():

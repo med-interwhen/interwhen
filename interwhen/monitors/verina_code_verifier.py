@@ -16,6 +16,7 @@ import subprocess
 from pathlib import Path
 from typing import Tuple, Optional
 from interwhen.utils.verina_verifier_utils import *
+from interwhen.utils.llm import render_user_turn, get_eot_token
 import shutil
 import httpx
 import copy
@@ -51,8 +52,11 @@ class StepVerifierVerinaMonitor(VerifyMonitor):
         async_execution: bool = True,
         open_think: str = "<think>",
         close_think: str = "</think>",
+        tokenizer=None,
     ):
         super().__init__(name)
+        if tokenizer is None:
+            raise ValueError("StepVerifierVerinaMonitor requires a tokenizer")
         self.task_data = task_data
         self.llm_server = llm_server
         self.prompt = prompt
@@ -62,6 +66,9 @@ class StepVerifierVerinaMonitor(VerifyMonitor):
         self.async_execution = async_execution
         self.open_think = open_think
         self.close_think = close_think
+        # Tokenizer used to render mid-stream user turns via the model's own chat
+        # template (see interwhen.utils.llm.render_user_turn).
+        self.tokenizer = tokenizer
         self.max_corrections = max_corrections
         self.num_corrections = 0
         
@@ -135,19 +142,15 @@ class StepVerifierVerinaMonitor(VerifyMonitor):
             print(f"[Verina Final] Compilation failed (attempt {attempt + 1}), retrying...")
             
             # Build retry prompt with error feedback
-            error_feedback = f"""
-<|im_end|>
-<|im_start|>user
-The code you gave failed with error:
+            error_feedback = self._user_turn(
+                f"""The code you gave failed with error:
 {clean_compile_output(compile_output)}
 
 Please fix the error and provide the corrected code. Think through the problem carefully, then output your solution wrapped in [CODE]...[/CODE] tags.
 
-{LEAN4_API_REFERENCE}
-<|im_end|>
-<|im_start|>assistant
-{self.open_think}
-"""
+{LEAN4_API_REFERENCE}""",
+                assistant_seed=self.open_think,
+            )
             retry_prompt = current_prompt + error_feedback
             
             # Call LLM for retry
@@ -156,7 +159,7 @@ Please fix the error and provide the corrected code. Think through the problem c
                 payload["prompt"] = retry_prompt
                 payload["max_tokens"] = 2048  # More tokens to allow thinking
                 payload["stream"] = False
-                payload["stop"] = ["[/CODE]", "</s>", "<|im_end|>"]
+                payload["stop"] = ["[/CODE]", "</s>", self._eot_token]
                 
                 headers = copy.deepcopy(self.llm_server.get("headers", {}))
                 url = self.llm_server["url"]
@@ -190,6 +193,22 @@ Please fix the error and provide the corrected code. Think through the problem c
         """Count the number of newlines in text."""
         return text.count('\n')
 
+    def _user_turn(self, content: str, assistant_seed: str = "") -> str:
+        """Render a mid-stream user turn to append to the running generation.
+
+        Closes the current assistant turn, adds a user message with ``content``,
+        and reopens an assistant turn seeded with ``assistant_seed`` (e.g. the
+        thinking-open tag) — using the model's own chat template, so no ChatML is
+        hardcoded.
+        """
+        return render_user_turn(self.tokenizer, content, assistant_seed)
+
+    @property
+    def _eot_token(self) -> str:
+        """The model's end-of-turn token (e.g. ChatML ``<|im_end|>``)."""
+        return get_eot_token(self.tokenizer)
+
+
     def _has_complete_code_block(self, text: str) -> bool:
         """Check if text contains a complete [CODE]...[/CODE] block."""
         return bool(re.search(r'\[CODE\].*?\[/CODE\]', text, re.DOTALL | re.IGNORECASE))
@@ -222,7 +241,8 @@ Please fix the error and provide the corrected code. Think through the problem c
 
     def _build_diversity_feedback(self, compile_output: str) -> str:
         """
-        Build feedback that escalates diversity with each failed attempt.
+        Build the user-message *content* that escalates diversity with each
+        failed attempt (chat turn tokens are added by the caller via _user_turn).
         
         - Attempt 1: Just show the error and ask to fix
         - Attempt 2+: Show error + all previous failed approaches, explicitly
@@ -233,10 +253,7 @@ Please fix the error and provide the corrected code. Think through the problem c
 
         if n_failures <= 1:
             # First failure: straightforward fix request
-            return f"""
-<|im_end|>
-<|im_start|>user
-The code you gave failed with error:
+            return f"""The code you gave failed with error:
 {cleaned_error}
 
 Please fix the error. Your code should compile.
@@ -248,10 +265,7 @@ Please fix the error. Your code should compile.
         for i, (code_snip, err_snip) in enumerate(self.failed_attempts[:-1], 1):
             prev_section += f"\n--- Failed Attempt {i} ---\n{code_snip}\nError: {err_snip}\n"
 
-        return f"""
-<|im_end|>
-<|im_start|>user
-The code you gave failed with error:
+        return f"""The code you gave failed with error:
 {cleaned_error}
 
 You have now failed {n_failures} time(s). Here are your previous failed attempts:
@@ -354,7 +368,7 @@ Do NOT repeat a similar approach. Use a fundamentally different algorithm or dat
         # Force code output (triggered by step_extractor)
         async with self.lock:
             self.force_count += 1
-            print(f"[Verina] Forcing code output after {self._count_newlines(step)} newlines (force #{self.force_count})")
+            # print(f"[Verina] Forcing code output after {self._count_newlines(step)} newlines (force #{self.force_count})")
         
         full_text = await self._stream_force_code(step)
         full_text_with_code = "[CODE]" + full_text
@@ -387,14 +401,12 @@ Do NOT repeat a similar approach. Use a fundamentally different algorithm or dat
             complete_generated = force_prompt + full_text
             
             # Build escalating feedback based on how many times we've failed
-            feedback = self._build_diversity_feedback(compile_output)
-            feedback += f"""
-<|im_end|>
-<|im_start|>assistant
-{self.open_think} It seems my code failed to compile. I should analyze the errror and try to fix it using a different approach.
-"""
+            feedback = self._user_turn(
+                self._build_diversity_feedback(compile_output),
+                assistant_seed=f"{self.open_think} It seems my code failed to compile. I should analyze the errror and try to fix it using a different approach.\n",
+            )
             async with self.lock:
-                print(f"[Verina] Verification #{current_verification}: Compilation FAILED after forcing code (attempt {len(self.failed_attempts)})")
+                # print(f"[Verina] Verification #{current_verification}: Compilation FAILED after forcing code (attempt {len(self.failed_attempts)})")
                 self.num_corrections += 1
                 # Progressive thinking budget: give more room on retries
                 self.k_steps = self.base_k_steps #+ (self.num_corrections * self.base_k_steps)
@@ -407,7 +419,7 @@ Do NOT repeat a similar approach. Use a fundamentally different algorithm or dat
         
         # Compilation succeeded
         async with self.lock:
-            print(f"[Verina] Verification #{current_verification}: Compilation SUCCESS after forcing code")
+            # print(f"[Verina] Verification #{current_verification}: Compilation SUCCESS after forcing code")
             self.success_found = True
             self.verified_code = code
         
@@ -415,14 +427,10 @@ Do NOT repeat a similar approach. Use a fundamentally different algorithm or dat
         force_prompt = self._build_force_code_feedback()
         complete_generated = force_prompt + full_text
 
-        success_feedback = f"""
-<|im_end|>
-<|im_start|>user
-Your code compiled successfully! Now give the final answer
-<|im_end|>
-<|im_start|>assistant
-{self.open_think} Good, the code I gave compiled successfully. Now I am confident in my answer, so I should output it in the required format.
-"""
+        success_feedback = self._user_turn(
+            "Your code compiled successfully! Now give the final answer",
+            assistant_seed=f"{self.open_think} Good, the code I gave compiled successfully. Now I am confident in my answer, so I should output it in the required format.\n",
+        )
         print(f"[Verina] Injecting success feedback with verified code in user message")
         async with self.lock:
             if not event.is_set():

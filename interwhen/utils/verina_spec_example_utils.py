@@ -13,7 +13,7 @@ from pathlib import Path
 from typing import List, Tuple, Optional, Dict, Any
 
 _SCRIPT_DIR = Path(__file__).parent.resolve()
-VERINA_ROOT = (_SCRIPT_DIR / "../../../../verina").resolve()
+VERINA_ROOT = (_SCRIPT_DIR / ".." / ".." / ".." / "verina").resolve()
 VERINA_DATASETS_PATH = VERINA_ROOT / "datasets" / "verina"
 LEAN_PLAYGROUND_DIR = VERINA_ROOT / "lean-playground"
 
@@ -341,10 +341,16 @@ Generate the precondition and postcondition. Use [PRECOND]...[/PRECOND] and [POS
     return system_prompt, user_prompt
 
 
-def build_full_prompt(data: BenchmarkData) -> str:
-    """Build the full prompt string for the LLM"""
+def build_full_prompt(data: BenchmarkData, tokenizer) -> str:
+    """Build the full prompt string for the LLM using the model's chat template."""
     system_prompt, user_prompt = build_spec_gen_prompt(data)
-    return f"<|im_start|>system\n{system_prompt}<|im_end|>\n<|im_start|>user\n{user_prompt}<|im_end|>\n<|im_start|>assistant\n"
+    return tokenizer.apply_chat_template(
+        [{"role": "system", "content": system_prompt},
+         {"role": "user", "content": user_prompt}],
+        tokenize=False,
+        add_generation_prompt=True,
+        enable_thinking=True,
+    )
 
 
 # Extraction Logic
