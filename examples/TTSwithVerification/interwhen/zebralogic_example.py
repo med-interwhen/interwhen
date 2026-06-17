@@ -26,7 +26,6 @@ from interwhen.utils.zebralogic_helper import (
 )
 from interwhen.utils.llm import init_llm_server, get_think_tags
 
-logging.basicConfig(level=logging.ERROR, format='%(asctime)s - %(name)s - %(levelname)s - %(message)s')
 logger = logging.getLogger(__name__)
 
 # Module-level tokenizer (initialized in __main__ for multiprocessing)
@@ -90,23 +89,23 @@ def run(args, problem):
         tokenizer=tokenizer,
     ))
 
-    # # Evaluate correctness
-    # candidate = extract_last_json(output_text)
-    # if candidate:
-    #     c, s, m, t = zebra_correctness(problem, candidate)
-    #     accuracy = c / t if t > 0 else 0
-    # else:
-    #     c, s, m, t, accuracy = 0, 0, 0, 0, 0
+    # Evaluate correctness
+    candidate = extract_last_json(output_text, close_think=think_tags['close'])
+    if candidate:
+        c, s, m, t = zebra_correctness(problem, candidate)
+        accuracy = c / t if t > 0 else 0
+    else:
+        c, s, m, t, accuracy = 0, 0, 0, 0, 0
 
     output = {
         'problem_id': problem_id,
         'problem': problem,
         'output_text': output_text,
-        # 'correct': c,
-        # 'skip': s,
-        # 'missing': m,
-        # 'total': t,
-        # 'accuracy': accuracy,
+        'correct': c,
+        'skip': s,
+        'missing': m,
+        'total': t,
+        'accuracy': accuracy,
     }
     with open(output_file, "a") as f:
         f.write(json.dumps(output, default=str) + "\n")
@@ -114,8 +113,9 @@ def run(args, problem):
     return output
 
 
-def _run_wrapper(args_problem):
-    return run(*args_problem)
+def run_one(task):
+    """Unpack ``(args, problem)`` and run a single ZebraLogic problem in a worker."""
+    return run(*task)
 
 
 if __name__ == "__main__":
@@ -144,19 +144,8 @@ if __name__ == "__main__":
                         help='Extra text description for output directory')
     args = parser.parse_args()
 
-    if args.debug:
-        logging.basicConfig(
-            level=logging.INFO,
-            format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
-            force=True
-        )
-
     # Initialize tokenizer (module-level for multiprocessing)
     tokenizer = AutoTokenizer.from_pretrained(args.solver_lm)
-
-    # Load dataset
-    logger.info("Loading ZebraLogic dataset...")
-    ds = get_zebralogic_dataset()
 
     # Setup output directory
     if args.continue_from:
@@ -167,6 +156,7 @@ if __name__ == "__main__":
         name = f"{model_name}_{mode}"
         if args.monitor:
             name += f"_maxcorr{args.monitor_max_corrections}_step{args.step_interval}"
+        name += f"_nexps{args.n_exps}"
         if args.debug:
             name += f"_debug"
             
@@ -178,6 +168,20 @@ if __name__ == "__main__":
             json.dump(vars(args), f, indent=4)
 
     args.output_dir = output_dir
+
+    # Configure logging to a run.log inside the output directory
+    logfile = os.path.join(output_dir, "run.log")
+    log_level = logging.DEBUG if args.debug else logging.INFO
+    logging.basicConfig(
+        level=log_level,
+        format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
+        handlers=[logging.FileHandler(logfile, mode="w")],
+        force=True,
+    )
+
+    # Load dataset
+    logger.info("Loading ZebraLogic dataset...")
+    ds = get_zebralogic_dataset()
 
     for i in range(args.n_exps):
         output_file = f"{output_dir}/outputs_solver_{i}.jsonl"
@@ -205,10 +209,11 @@ if __name__ == "__main__":
         if not args.debug:
             with Pool(processes=args.n_processes) as pool:
                 results = list(tqdm(
-                    pool.imap_unordered(_run_wrapper, [(args, p) for p in ds_run]),
+                    pool.imap_unordered(run_one, [(args, p) for p in ds_run]),
                     total=len(ds_run),
+                    desc="ZebraLogic",
                 ))
         else:
             # Single-process mode for debugging
-            _run_wrapper((args, ds_run[0]))
+            results = [run_one((args, p)) for p in tqdm(ds_run, desc="ZebraLogic")]
 
