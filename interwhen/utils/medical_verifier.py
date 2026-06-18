@@ -7,6 +7,15 @@ Constructed by MedicalMonitor.__init__ (medical_monitor.py) from
 verifier_port/verifier_model/run_snomed, and called from
 MedicalMonitor._call_verifier via verify_trace().
 
+Prompts are unchanged from medical_reasoning_prompts.py. There are two:
+build_reasoning_hypothesis_prompt (verifier judges alone, using only the
+reasoning trace) and build_reasoning_hypothesis_snomed_prompt (verifier
+judges again after SNOMED CT definitions have been fetched for a label
+that came back UNKNOWN). verify_trace() below calls the first always, and
+the second only on UNKNOWN, treating the new content in the streamed
+trace as the hypothesis and the question/options/accepted-so-far context
+as the reasoning_trace in both calls.
+
 Contract
 --------
     verify_trace(text, question, options) -> (passed: bool, feedback: str | None)
@@ -381,9 +390,10 @@ class MedicalReasoningVerifier:
                 time.sleep(self.config.snomed_rate_limit_sleep)
                 snomed_block = SnomedClient.build_feedback_block({new_content: enrichment})
 
-                prompt2 = MedicalReasoningPromptBuilder.build_reasoning_hypothesis_prompt(
-                    reasoning_trace=context_block + f"\n\nSNOMED CT definitions:\n{snomed_block}",
+                prompt2 = MedicalReasoningPromptBuilder.build_reasoning_hypothesis_snomed_prompt(
+                    reasoning_trace=context_block,
                     hypothesis=new_content,
+                    snomed_context=snomed_block,
                     allow_unknown=self.config.allow_unknown,
                 )
                 resp2 = self.vllm.call(prompt2)

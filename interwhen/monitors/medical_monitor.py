@@ -23,7 +23,7 @@ What this monitor actually does (the "brain" loop)
        - "generated_text": everything the model produced up to this point
        - "feedback": the verifier's own feedback string
      stream_completion then calls fix(), which appends the feedback to the
-     generated text and re-prompts the model with that as prev_text, this
+     generated text and re-prompts the model with that as prev_text — this
      is the actual "stop, show it what it built, show it the feedback,
      let it try again" cycle.
 
@@ -63,7 +63,7 @@ logger = logging.getLogger(__name__)
 
 # Sentinel feedback text used when max_corrections is reached. fix() appends
 # this to the generated text and stream_completion does not recurse again
-# after that, see medical_example.py, which checks event_info["gave_up"]
+# after that — see medical_example.py, which checks event_info["gave_up"]
 # only for logging; the actual stop is just "the recursive call returns
 # without setting the event again because generation has ended".
 MAX_CORRECTIONS_SENTINEL = "\n[STOPPED: maximum correction attempts reached without a passing verification.]"
@@ -75,7 +75,7 @@ class MedicalMonitor(VerifyMonitor):
     Args:
         name:            Monitor identifier.
         instance:        Problem dict for the current item (question, options,
-                          answer, reasoning, id, etc. : see medical_helper.py).
+                          answer, reasoning, id, etc. — see medical_helper.py).
         line_interval:   Trigger verification every N non-empty reasoning
                           lines generated inside the <think> block.
         max_corrections: Maximum number of feedback injections allowed before
@@ -188,7 +188,7 @@ class MedicalMonitor(VerifyMonitor):
             generated_text: The full generation so far (includes chunk).
 
         Returns:
-            (trigger, text_to_verify) : text_to_verify is generated_text when
+            (trigger, text_to_verify) — text_to_verify is generated_text when
             trigger is True, else None.
         """
         if not self._is_in_think_block(generated_text):
@@ -210,7 +210,7 @@ class MedicalMonitor(VerifyMonitor):
         return False, None
 
     # ------------------------------------------------------------------
-    # verify : the actual "brain": ask the verifier, stop on failure
+    # verify — the actual "brain": ask the verifier, stop on failure
     # ------------------------------------------------------------------
 
     async def verify(
@@ -278,7 +278,7 @@ class MedicalMonitor(VerifyMonitor):
             event.set()
 
     # ------------------------------------------------------------------
-    # fix : stop the LLM, show it what it built + the feedback, let it retry
+    # fix — stop the LLM, show it what it built + the feedback, let it retry
     # ------------------------------------------------------------------
 
     async def fix(
@@ -293,10 +293,10 @@ class MedicalMonitor(VerifyMonitor):
         feedback the verifier gave": the text the model already generated,
         followed by the verifier's feedback. stream_completion then re-sends
         prompt + this text as the new prev_text and lets the model continue
-        from there : UNLESS event_info["gave_up"] is True, in which case we
+        from there — UNLESS event_info["gave_up"] is True, in which case we
         also set event_info["phase"] = "final_answer_correct".
 
-        That phase flag is not specific to "correct answers" : it is the one
+        That phase flag is not specific to "correct answers" — it is the one
         generic early-return switch stream_completion already checks
         (interject.py: `if stop_info.get("phase") == "final_answer_correct"`)
         to stop recursing and return immediately instead of calling the LLM
