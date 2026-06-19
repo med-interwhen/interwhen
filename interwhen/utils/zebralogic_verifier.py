@@ -10,7 +10,7 @@ import json
 from collections import defaultdict
 from typing import Dict, List, Tuple, Optional, Set
 from importlib import resources
-from z3 import Solver, And, Or, Not, Bool, PbEq
+from z3 import Solver, And, Or, Not, Bool, PbEq, sat
 
 
 # ============== ZebraLogicProblem ==============
@@ -32,6 +32,8 @@ class ZebraLogicProblem:
         self.houses = list(range(self.n_houses))
         self.features = self._make_features(problem['features'])
         self.clue_texts = problem['clues']
+        for clue_ir in problem['clue_irs']:
+            self.apply_ir(clue_ir)
 
     def _make_features(self, features_domains: dict) -> dict:
         """Create Z3 boolean variables for each feature/value/house combination.
@@ -73,31 +75,32 @@ class ZebraLogicProblem:
             same_house: Two entities at same position
             pos_relation: Spatial relationship between entities
         """
-        from z3 import And, Or, Not
+        def _norm(s):
+            return s.lower() if isinstance(s, str) else s
 
         t = ir["type"]
 
         if t == "place":
-            f, v = ir["entity"]
+            f, v = _norm(ir["entity"][0]), _norm(ir["entity"][1])
             h = ir["pos"] - 1  # Convert 1-indexed to 0-indexed
             return self.features[f][v][h]
 
         if t == "not_place":
-            f, v = ir["entity"]
+            f, v = _norm(ir["entity"][0]), _norm(ir["entity"][1])
             h = ir["pos"] - 1
             return Not(self.features[f][v][h])
 
         if t == "same_house":
-            (f1, v1) = ir["A"]
-            (f2, v2) = ir["B"]
+            f1, v1 = _norm(ir["A"][0]), _norm(ir["A"][1])
+            f2, v2 = _norm(ir["B"][0]), _norm(ir["B"][1])
             return And(*[
                 self.features[f1][v1][h] == self.features[f2][v2][h]
                 for h in self.houses
             ])
 
         if t == "pos_relation":
-            (f1, v1) = ir["A"]
-            (f2, v2) = ir["B"]
+            f1, v1 = _norm(ir["A"][0]), _norm(ir["A"][1])
+            f2, v2 = _norm(ir["B"][0]), _norm(ir["B"][1])
             direction = ir["direction"]
             dist = ir["dist"]
 
@@ -106,11 +109,15 @@ class ZebraLogicProblem:
 
             def k_to_left(k):
                 clauses = []
+                
+                # A is somewhere to the left of B
                 if k == "?":
                     for h1 in self.houses:
                         for h2 in self.houses:
                             if h1 < h2:
                                 clauses.append(And(A(h1), B(h2)))
+                
+                # A at h, B at h + k
                 else:
                     k = int(k)
                     for h in range(0, self.n_houses - k):
@@ -119,11 +126,15 @@ class ZebraLogicProblem:
 
             def k_to_right(k):
                 clauses = []
+                
+                # A is somewhere to the right of B
                 if k == "?":
                     for h1 in self.houses:
                         for h2 in self.houses:
                             if h1 > h2:
                                 clauses.append(And(A(h1), B(h2)))
+                
+                # A at h, B at h - k
                 else:
                     k = int(k)
                     for h in range(k, self.n_houses):
@@ -154,12 +165,15 @@ class ZebraLogicProblem:
         compiled_disjuncts = []
         for disjunct in ir:
             assert isinstance(disjunct, list), "Each disjunct must be a list of conjuncts"
-            compiled_conjuncts = [self.compile_constraint(c) for c in disjunct]
+            compiled_conjuncts = []
+            for conjunct in disjunct:
+                assert isinstance(conjunct, dict), "Each conjunct must be a dict representing an IR"
+                compiled = self.compile_constraint(conjunct)
+                compiled_conjuncts.append(compiled)
             compiled_disjuncts.append(And(*compiled_conjuncts))
         self.solver.add(Or(*compiled_disjuncts))
 
     @property
     def is_satisfiable(self) -> bool:
         """Check if the current constraints are satisfiable."""
-        from z3 import sat
         return self.solver.check() == sat
