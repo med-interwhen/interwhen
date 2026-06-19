@@ -35,7 +35,8 @@ if __name__ == "__main__":
         monitors=(SimpleTextReplaceMonitor("IsCheck", think_tags['close'], async_execution=True),),
         add_delay=False,
         termination_requires_validation=False,
-        async_execution=True
+        async_execution=True,
+        tokenizer=tokenizer
     ))
     
     # Save output to file

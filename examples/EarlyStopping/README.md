@@ -14,7 +14,8 @@ answer = await stream_completion(
     monitors=(your_monitor,),
     add_delay=False,
     termination_requires_validation=False,
-    async_execution=True
+    async_execution=True,
+    tokenizer=tokenizer
 )
 ```
 

@@ -230,7 +230,8 @@ if __name__ == "__main__":
             monitors=monitors,
             add_delay=False,
             termination_requires_validation=False,
-            async_execution=True
+            async_execution=True,
+            tokenizer=tokenizer
         ))
         save_prompt(idx, answer, reason_dir)
         logger.info(f"Raw final output:\n{answer}")

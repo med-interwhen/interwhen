@@ -430,7 +430,8 @@ if __name__ == "__main__":
                 monitors=(monitor,),
                 add_delay=False,
                 termination_requires_validation=False,
-                async_execution=True
+                async_execution=True,
+                tokenizer=tokenizer
             ))
         except Exception as e:
             logger.error(f"Error running example {idx}: {e}")

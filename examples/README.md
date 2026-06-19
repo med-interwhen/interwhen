@@ -16,7 +16,8 @@ stream_completion(
     prompt,
     llm_server=llm_server,
     monitors=(SimpleTextReplaceMonitor("IsCheck", "</think>", async_execution=True),),
-    async_execution=True
+    async_execution=True,
+    tokenizer=tokenizer
 )
 ```
 The above code implements a simple monitor that watches the model's output stream and replaces all occurences of "is" with "isn't". It can be replaced with your custom monitor, e.g., for checking logical correctness or domain-specific constraints.  You can run the full example 
