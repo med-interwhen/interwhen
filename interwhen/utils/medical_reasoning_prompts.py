@@ -31,8 +31,16 @@ class PromptConfig:
     FALSE_TRACE_HYPO   = "- FALSE = contradicted by the reasoning trace."
 
     # ── UNKNOWN definitions ────────────────────────────────────────────────
-    UNKNOWN_WORLD_HYPO   = "- UNKNOWN = uncertain or insufficient medical certainty."
-    UNKNOWN_TRACE_HYPO   = "- UNKNOWN = insufficient information in the reasoning trace."
+    UNKNOWN_WORLD_HYPO = (
+        "- UNKNOWN = information is insufficient to judge medical certainty; "
+        "if returning UNKNOWN, include a brief (1–2 sentence) explanation under "
+        "'evidence' describing what additional information would resolve the uncertainty."
+    )
+    UNKNOWN_TRACE_HYPO = (
+        "- UNKNOWN = insufficient information in the reasoning trace; "
+        "if returning UNKNOWN, include a brief (1–2 sentence) explanation under "
+        "'evidence' describing what additional information would resolve the uncertainty."
+    )
 
 
 # BUILDER
