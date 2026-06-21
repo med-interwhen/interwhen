@@ -1,0 +1,18 @@
+{
+    "solver_lm": "Qwen/Qwen3-30B-A3B-Thinking-2507",
+    "port": 8000,
+    "monitor": true,
+    "verifier_port": 8000,
+    "verifier_model": "Qwen/Qwen3-30B-A3B-Thinking-2507",
+    "monitor_max_corrections": 5,
+    "line_interval": 5,
+    "no_snomed": false,
+    "split": "train",
+    "max_samples": 5,
+    "start_idx": 0,
+    "end_idx": -1,
+    "n_processes": 8,
+    "debug": false,
+    "continue_from": null,
+    "extra": ""
+}

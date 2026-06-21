@@ -31,8 +31,16 @@ class PromptConfig:
     FALSE_TRACE_HYPO   = "- FALSE = contradicted by the reasoning trace."
 
     # ── UNKNOWN definitions ────────────────────────────────────────────────
-    UNKNOWN_WORLD_HYPO   = "- UNKNOWN = uncertain or insufficient medical certainty."
-    UNKNOWN_TRACE_HYPO   = "- UNKNOWN = insufficient information in the reasoning trace."
+    UNKNOWN_WORLD_HYPO = (
+        "- UNKNOWN = information is insufficient to judge medical certainty; "
+        "if returning UNKNOWN, include a brief (1–2 sentence) explanation under "
+        "'evidence' describing what additional information would resolve the uncertainty."
+    )
+    UNKNOWN_TRACE_HYPO = (
+        "- UNKNOWN = insufficient information in the reasoning trace; "
+        "if returning UNKNOWN, include a brief (1–2 sentence) explanation under "
+        "'evidence' describing what additional information would resolve the uncertainty."
+    )
 
 
 # BUILDER
@@ -77,7 +85,6 @@ Rules:
 {C.FALSE_TRACE_HYPO}
 {unknown_rule}{C.RULE_CONSISTENT}
 
-- Assign a probability (0.0–1.0) to each allowed answer; probabilities must sum to 1.
 {C.RETURN_JSON}
 
 Reasoning Trace:
@@ -94,8 +101,7 @@ Output format:
     "label": "TRUE",
     "evidence": [
         "direct or semantically supported statement from the reasoning trace"
-    ],
-    "option_probabilities": {{"TRUE": 0.85, "FALSE": 0.10, "UNKNOWN": 0.05}}
+    ]
 }}
 """
 
@@ -131,7 +137,6 @@ Rules:
 {C.FALSE_WORLD_HYPO}
 {unknown_rule}{C.RULE_CONSISTENT}
 
-- Assign a probability (0.0–1.0) to each allowed answer; probabilities must sum to 1.
 {C.RETURN_JSON}
 
 Reasoning Trace:
@@ -147,11 +152,52 @@ Output format:
     "label": "TRUE",
     "evidence": [
         "statement from the reasoning trace or the SNOMED definitions"
-    ],
-    "option_probabilities": {{"TRUE": 0.85, "FALSE": 0.10, "UNKNOWN": 0.05}}
+    ]
 }}
 """
 
+    # SNOMED TERM EXTRACTION — convert a reasoning chunk into lookup terms
+
+    @classmethod
+    def build_snomed_term_extraction_prompt(
+        cls,
+        *,
+        question: str,
+        options_text: str,
+        reasoning_chunk: str,
+    ) -> str:
+
+        return f"""{C.ROLE_VERIFIER}
+
+Extract SNOMED CT lookup terms from the reasoning chunk.
+
+Rules:
+- Return ONLY valid JSON.
+- Extract concise clinical concepts, not full sentences or paragraphs.
+- Prefer disorders, symptoms, signs, body structures, drugs, procedures, tests,
+  organisms, substances, and clinically meaningful findings.
+- Include terms from the question/options if they are needed to disambiguate
+  the reasoning chunk.
+- Do not explain the terms.
+- Do not include duplicate terms.
+
+Question:
+{question}
+
+Options:
+{options_text}
+
+Reasoning chunk:
+{reasoning_chunk}
+
+Output format:
+{{
+    "terms": [
+        "term 1",
+        "term 2"
+    ]
+}}
+"""
 
 if __name__ == "__main__":
 
