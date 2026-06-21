@@ -39,8 +39,9 @@ Observation, Inference, or Diagnosis.
 
 ### Observation:
 List all directly observed clinical facts for this reasoning cycle.
-Include symptoms, vital signs, physical examination findings, and any
-other directly reported data.
+Include symptoms, vital signs, physical examination findings, answer choices,
+and any other directly reported data. Do not add unstated symptoms, labs,
+imaging, risk factors, demographics, or history.
 Example:
   Observation:
   - Patient is a 58-year-old male presenting with crushing chest pain
@@ -50,11 +51,13 @@ Example:
 ### Inference:
 State what you conclude from the observations.
 Explicitly link each inference to the observation(s) that support it.
-Flag any inference that is uncertain with "(uncertain)" or "(differential)".
+For multiple-choice questions, compare clinically plausible options before
+committing to one.
+Flag any inference that is uncertain with UNKNOWN.
 Example:
   Inference:
   - Crushing chest pain + radiation + diaphoresis suggests ACS (supports → STEMI).
-  - Hypotension + tachycardia suggests cardiogenic shock (uncertain — may be
+  - Hypotension + tachycardia suggests cardiogenic shock (UNKNOWN — may be
     vasovagal or volume depletion).
 
 ### Evidence:
@@ -68,8 +71,10 @@ Example:
   - Troponin I: pending.
 
 ### Diagnosis:
-State the working diagnosis (or differential) in order of likelihood.
-Use standard clinical terminology (ICD-level precision preferred).
+State the working diagnosis, answer option, or differential in order of likelihood.
+For multiple-choice questions, include the option letter and option text once
+enough evidence is available. Use standard clinical terminology when applicable
+(ICD-level precision preferred).
 Example:
   Diagnosis:
   1. Inferior STEMI (I21.1) — primary working diagnosis
@@ -77,8 +82,8 @@ Example:
   3. NSTEMI / unstable angina (I24.0) — lower on differential pending troponin
 
 ### Plan:
-Outline the immediate management plan.
-Flag contraindications explicitly.
+Outline the immediate management plan, answer-selection plan, or next reasoning
+step. Flag contraindications, exclusions, and dangerous alternatives explicitly.
 Example:
   Plan:
   - Activate cardiac catheterization lab immediately (PCI target < 90 min).
@@ -99,15 +104,17 @@ Example:
    incorporate it immediately under a new reasoning cycle labelled
    "Feedback-Triggered Revision:".
 5. When you have reached a final answer, conclude with:
-   Final Answer: <your diagnosis and plan>
+   Final Answer: <option letter and text if options are present; otherwise diagnosis and plan>
 
 ## Final Answer Format
 
-Conclude your response with a clearly delimited final answer block:
+Conclude your response within a final answer block as shown below:
 
 [FINAL ANSWER]
+Selected Option: <MUST be the exact option identifier from the question (e.g., A, B, C, D, E). If options are present, do not omit the identifier.>
+Selected Text: <full text of the chosen option>
 Diagnosis: <primary diagnosis and key differentials>
-Plan: <key management steps>
+Plan: <key management steps or answer-selection rationale>
 [/FINAL ANSWER]
 """
 

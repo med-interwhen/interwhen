@@ -9,8 +9,7 @@ What this monitor actually does (the "brain" loop)
    a <think>...</think> block, every `line_interval` non-empty reasoning
    lines it hands the FULL generated-text-so-far to verify().
 
-2. verify() sends that text to the verifier (today: a stub that always says
-   "pass"; later: a real medical verifier). The verifier returns a
+2. verify() sends that text to the verifier. The verifier returns a
    pass/fail decision plus, on failure, a feedback string explaining what's
    wrong.
 
@@ -58,7 +57,7 @@ from ..utils.medical_verifier import (
     MedicalReasoningVerifier,
     VerifierConfig,
 )
-
+from ..utils.medical_verifier_snomed import MedicalReasoningVerifierSnomedFirst
 logger = logging.getLogger(__name__)
 
 # Sentinel feedback text used when max_corrections is reached. fix() appends
@@ -128,7 +127,7 @@ class MedicalMonitor(VerifyMonitor):
                 self.snomed_client = SnomedClient()
             except ValueError as e:
                 logger.warning("[MedicalMonitor] SNOMED disabled: %s", e)
-        self.verifier = MedicalReasoningVerifier(
+        self.verifier = MedicalReasoningVerifierSnomedFirst(
             vllm=self.vllm_client,
             snomed=self.snomed_client,
             config=VerifierConfig(run_snomed=run_snomed),
