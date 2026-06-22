@@ -403,7 +403,7 @@ Do NOT repeat a similar approach. Use a fundamentally different algorithm or dat
             # Build escalating feedback based on how many times we've failed
             feedback = self._user_turn(
                 self._build_diversity_feedback(compile_output),
-                assistant_seed=f"{self.open_think} It seems my code failed to compile. I should analyze the errror and try to fix it using a different approach.\n",
+                assistant_seed=f"{self.open_think} It seems my code failed to compile. I should analyze the error and try to fix it using a different approach.\n",
             )
             async with self.lock:
                 # print(f"[Verina] Verification #{current_verification}: Compilation FAILED after forcing code (attempt {len(self.failed_attempts)})")
