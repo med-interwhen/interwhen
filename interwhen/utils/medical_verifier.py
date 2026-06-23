@@ -321,18 +321,20 @@ class MedicalReasoningVerifier:
 
     def __init__(
         self,
-        vllm:         LocalVLLMClient,
-        snomed:       Optional[SnomedClient]  = None,
-        config:       Optional[VerifierConfig] = None,
-        compact_case: str                      = "",
-        snomed_cache: Optional[Dict[str, str]] = None,
+        vllm:           LocalVLLMClient,
+        snomed:         Optional[SnomedClient]  = None,
+        config:         Optional[VerifierConfig] = None,
+        compact_case:   str                      = "",
+        snomed_cache:   Optional[Dict[str, str]] = None,
+        think_open_tag: str                      = "<think>",
     ):
-        self.vllm          = vllm
-        self.snomed        = snomed
-        self.config        = config or VerifierConfig()
-        self.compact_case  = compact_case
-        self.snomed_cache  = snomed_cache or {}
-        self.compact_state = CompactState()
+        self.vllm           = vllm
+        self.snomed         = snomed
+        self.config         = config or VerifierConfig()
+        self.compact_case   = compact_case
+        self.snomed_cache   = snomed_cache or {}
+        self.compact_state  = CompactState()
+        self.think_open_tag = think_open_tag
         self.decision_log: List[dict] = []
 
     # ── Text splitting ─────────────────────────────────────────────────────────
@@ -467,7 +469,6 @@ class MedicalReasoningVerifier:
 
         if label == "UNKNOWN" and not _retried:
             if self.snomed is not None and self.config.run_snomed:
-                # Extract the specific uncertain terms and fetch SNOMED for them
                 terms_resp = self.vllm.call(
                     MedicalReasoningPromptBuilder.build_snomed_term_extraction_prompt(
                         question       = question,
@@ -480,15 +481,21 @@ class MedicalReasoningVerifier:
                     self._realtime_snomed(terms, question)
                     return self._verify_inference(paragraph, options, question, _retried=True)
 
-            if self.config.unknown_defaults_to_pass:
-                return True, None
-            return False, self._format_feedback(resp, prefix="Unresolved uncertainty: ")
-
-        # UNKNOWN after retry, or unexpected label — fail open
-        if self.config.unknown_defaults_to_pass:
-            return True, None
-        return False, self._format_feedback(resp, prefix="Unresolved uncertainty: ")
-
+        # UNKNOWN (no SNOMED, terms empty, or after retry) — force solver to commit.
+        # Passing ambiguous reasoning silently was the main accuracy leak:
+        # unknown_defaults_to_pass=True meant the verifier only caught
+        # *confidently* wrong inferences, not uncertain ones.
+        evidence = resp.get("evidence", [])
+        hint     = evidence[0] if evidence else "insufficient reasoning detail"
+        return False, self._format_feedback(
+            resp,
+            prefix=(
+                "Your reasoning is ambiguous here — the verifier could not confirm "
+                f"or refute this inference ({hint}). "
+                "Make your clinical reasoning explicit: state which specific finding "
+                "leads to which conclusion and why the other options are less likely."
+            ),
+        )
     def _verify_conclusion(
         self,
         paragraph: str,

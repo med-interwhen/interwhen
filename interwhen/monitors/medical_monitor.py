@@ -121,18 +121,19 @@ class MedicalMonitor(VerifyMonitor):
 
     def step_extractor(self, chunk: str, generated_text: str) -> Tuple[bool, Optional[str]]:
         """
-        Triggers on:
-          - UNKNOWN in the chunk: solver signaled uncertainty mid-paragraph
-          - \\n\\n  in the chunk: a paragraph just completed
+        Triggers on \\n\\n only: a paragraph just completed.
 
-        Both signals carry the full accumulated generated_text so the verifier
-        can extract the relevant paragraph via _split_latest.
+        UNKNOWN mid-paragraph is no longer an independent trigger. When UNKNOWN
+        fires mid-sentence, _split_latest extracts a fragment that the classifier
+        almost always labels OTHER (not enough context) and silently passes —
+        no verification actually happens. The solver writing UNKNOWN is a
+        self-flag; the verifier catches the full paragraph when \\n\\n arrives
+        and can assess the ambiguity then. The new UNKNOWN→False path in
+        _verify_inference means the verifier will push back on that paragraph
+        appropriately once it is complete.
         """
         if not self._is_in_think_block(generated_text):
             return False, None
-
-        if "UNKNOWN" in chunk:
-            return True, generated_text
 
         if "\n\n" in chunk:
             return True, generated_text
@@ -154,15 +155,16 @@ class MedicalMonitor(VerifyMonitor):
         num_prior_corrections = self._count_feedback_blocks(chunk)
         passed, feedback      = self._call_verifier(chunk)
 
-        if passed:
-            logger.debug("[MedicalMonitor.verify] PASS at token_index=%d", token_index)
-            return
-
         logger.info(
-            "[MedicalMonitor.verify] FAIL at token_index=%d "
-            "(prior=%d/%d): %s",
-            token_index, num_prior_corrections, self.max_corrections, feedback,
+            "[MedicalMonitor.verify] token=%d | passed=%s | snomed_cache=%d "
+            "| feedback_blocks=%d/%d | feedback=%r",
+            token_index, passed, len(self.verifier.snomed_cache),
+            num_prior_corrections, self.max_corrections,
+            (feedback or "")[:120],
         )
+
+        if passed:
+            return
 
         if num_prior_corrections >= self.max_corrections:
             if not event.is_set():

@@ -4,7 +4,6 @@ medical_verifier_snomed.py
 
 from __future__ import annotations
 
-import time
 from dataclasses import dataclass
 from typing import Dict, List, Optional, Tuple
 
@@ -19,34 +18,37 @@ from .medical_verifier import (
 
 @dataclass
 class SnomedFirstConfig(VerifierConfig):
-    max_terms: int = 5   # max terms extracted per inference paragraph for real-time lookup
+    max_terms: int = 5
 
 
 class MedicalReasoningVerifierSnomedFirst(MedicalReasoningVerifier):
     """
     Extends MedicalReasoningVerifier with per-paragraph real-time SNOMED enrichment.
 
-    The base class uses the SNOMED cache pre-fetched by MedicalPreprocessor
-    (option terms, fetched before generation). This subclass additionally
-    extracts clinical terms from each INFERENCE/CONCLUSION paragraph as it
-    arrives and fetches SNOMED definitions for any terms not already cached.
+    For every INFERENCE/CONCLUSION paragraph, clinical terms are extracted and
+    any not already in the cache are fetched from BioPortal before the base
+    verification call runs — so the SNOMED context is maximally populated at
+    the point the verifier prompt is assembled.
 
-    Result: the cache grows richer throughout generation. By the time a
-    conclusion is reached, both the pre-known option concepts and any
-    paragraph-specific concepts encountered during reasoning are available.
+    _verify_inference always passes _retried=True to super() so the base class
+    skips its own redundant SNOMED extraction on UNKNOWN. SnomedFirst has
+    already done the enrichment for this paragraph; the base's retry loop
+    would just repeat the same term extraction and BioPortal calls.
 
-    Only _verify_inference and _verify_conclusion are overridden — all
-    observation grounding, state management, splitting, and feedback
-    formatting are inherited unchanged.
+    Fixes vs original:
+      - _enrich_for_paragraph now respects config.run_snomed (was checking
+        only self.snomed is None, so --no_snomed was silently ignored)
+      - _verify_inference passes _retried=True to super, preventing double
+        SNOMED enrichment when the verifier returns UNKNOWN
     """
 
     def __init__(
         self,
         vllm:         LocalVLLMClient,
-        snomed:       Optional[SnomedClient]           = None,
-        config:       Optional[SnomedFirstConfig]      = None,
-        compact_case: str                              = "",
-        snomed_cache: Optional[Dict[str, str]]         = None,
+        snomed:       Optional[SnomedClient]      = None,
+        config:       Optional[SnomedFirstConfig] = None,
+        compact_case: str                         = "",
+        snomed_cache: Optional[Dict[str, str]]    = None,
     ):
         super().__init__(
             vllm         = vllm,
@@ -63,18 +65,19 @@ class MedicalReasoningVerifierSnomedFirst(MedicalReasoningVerifier):
         options:   dict,
     ) -> None:
         """
-        Extract clinical terms specific to this paragraph and fetch SNOMED
-        for any not already in the cache. Updates self.snomed_cache in-place.
+        Extract clinical terms from this paragraph and fetch SNOMED for any
+        not already in the cache. Updates self.snomed_cache in-place.
         """
-        if self.snomed is None:
+        # Fix: was only checking `self.snomed is None`, ignoring config.run_snomed
+        if self.snomed is None or not self.config.run_snomed:
             return
 
         opts_text  = self._options_text(options)
         terms_resp = self.vllm.call(
             MedicalReasoningPromptBuilder.build_snomed_term_extraction_prompt(
-                question       = question,
-                options_text   = opts_text,
-                reasoning_chunk= paragraph,
+                question        = question,
+                options_text    = opts_text,
+                reasoning_chunk = paragraph,
             )
         )
         terms = terms_resp.get("terms", [])
@@ -96,11 +99,17 @@ class MedicalReasoningVerifierSnomedFirst(MedicalReasoningVerifier):
         question:  str  = "",
         _retried:  bool = False,
     ) -> Tuple[bool, Optional[str]]:
-        """Enrich SNOMED cache for this paragraph, then run base inference verification."""
+        """
+        Enrich SNOMED cache for this paragraph, then call super with
+        _retried=True so the base class skips its own redundant SNOMED
+        extraction and retry on UNKNOWN — SnomedFirst has already done it.
+        """
         if not _retried:
-            # Only enrich on the first attempt — cache is populated for the retry
             self._enrich_for_paragraph(paragraph, question, options)
-        return super()._verify_inference(paragraph, options, question, _retried=_retried)
+
+        # Always tell super it's pre-enriched: prevents base from re-extracting
+        # terms and making duplicate BioPortal calls when label == UNKNOWN
+        return super()._verify_inference(paragraph, options, question, _retried=True)
 
     def _verify_conclusion(
         self,

@@ -185,7 +185,7 @@ Output format (if issues found):
         paragraph: str,
         allow_unknown: bool = True,
     ) -> str:
-        unknown_rule  = f"{C.UNKNOWN_TRACE_HYPO}\n" if allow_unknown else ""
+        unknown_rule  = f"{C.UNKNOWN_WORLD_HYPO}\n" if allow_unknown else ""
         snomed_section = f"SNOMED CT Definitions:\n{snomed_context}" if snomed_context.strip() else ""
         allowed        = cls._allowed_labels(allow_unknown)
 
@@ -197,8 +197,8 @@ supports or eliminates the appropriate options.
 
 Rules:
 {C.RULE_VALID_REASONING}
-{C.TRUE_TRACE_HYPO}
-{C.FALSE_TRACE_HYPO}
+{C.TRUE_WORLD_HYPO}
+{C.FALSE_WORLD_HYPO}
 {unknown_rule}{C.RULE_CONSISTENT}
 {C.RETURN_JSON}
 
