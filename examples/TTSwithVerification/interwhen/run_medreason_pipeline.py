@@ -110,16 +110,30 @@ def build_prompt(sample: dict, tok) -> str:
 def exact_correctness_check(output_text: str, sample: dict) -> "bool | None":
     """
     Primary scorer: extract 'Selected Option: X' from [FINAL ANSWER] block.
-    Returns None if the block is absent or malformed.
+
+    Qwen3 thinking models write a draft [FINAL ANSWER] inside the <think>
+    block 77% of the time, then produce the real response after </think>.
+    We look in the response section first; fall back to the think section if
+    the response has no block (23% of outputs).
+    Returns None if no block is found or it contains no option letter.
     """
-    m = re.search(r"\[FINAL ANSWER\](.*?)\[/FINAL ANSWER\]", output_text, re.DOTALL)
-    if not m:
+    think_close = "</think>"
+    if think_close in output_text:
+        response_section = output_text.split(think_close, 1)[1]
+    else:
+        response_section = output_text
+
+    def _extract(text: str) -> "str | None":
+        m = re.search(r"\[FINAL ANSWER\](.*?)\[/FINAL ANSWER\]", text, re.DOTALL)
+        if not m:
+            return None
+        opt = re.search(r"Selected Option:\s*([A-E])", m.group(1), re.IGNORECASE)
+        return opt.group(1).strip().upper() if opt else None
+
+    letter = _extract(response_section) or _extract(output_text)
+    if letter is None:
         return None
-    block = m.group(1)
-    opt   = re.search(r"Selected Option:\s*([A-E])", block, re.IGNORECASE)
-    if not opt:
-        return None
-    return opt.group(1).strip().upper() == sample["answer"].strip().upper()
+    return letter == sample["answer"].strip().upper()
 
 
 def rough_correctness_check(output_text: str, sample: dict) -> "bool | None":
@@ -266,4 +280,3 @@ def main():
 
 if __name__ == "__main__":
     main()
-    
