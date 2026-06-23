@@ -10,6 +10,9 @@ All step verification monitors are used via `stream_completion`:
 from interwhen import stream_completion
 from interwhen.monitors import StepVerifierGame24Monitor, StepVerifierMazeMonitor, StepVerifierSpatialMapMonitor
 
+tokenizer = AutoTokenizer.from_pretrained("Qwen/Qwen3-30B-A3B-Thinking-2507")
+llm_server = init_llm_server("Qwen/Qwen3-30B-A3B-Thinking-2507", context_length=32768, port=8000)
+
 answer = await stream_completion(
     prompt,
     llm_server=llm_server,

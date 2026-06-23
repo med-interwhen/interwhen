@@ -122,7 +122,7 @@ python -m vllm.entrypoints.openai.api_server \
 **Generate answer enabled with given monitors**
 ```python
 tokenizer = AutoTokenizer.from_pretrained("Qwen/Qwen3-30B-A3B-Thinking-2507")
-llm_server = init_llm_server("Qwen/Qwen3-30B-A3B-Thinking-2507", max_tokens=32768, port=8000)
+llm_server = init_llm_server("Qwen/Qwen3-30B-A3B-Thinking-2507", context_length=32768, port=8000)
 stream_completion(
     prompt,
     llm_server=llm_server,
