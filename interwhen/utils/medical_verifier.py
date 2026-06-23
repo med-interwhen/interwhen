@@ -1,5 +1,14 @@
 """
-medical_verifier.py
+medical_verifier.py  —  Structured-section verifier.
+
+Key changes from the free-reasoning version:
+  - _classify() is GONE. Section type is read from the enclosing tag, not
+    inferred by a separate LLM call.
+  - _split_latest() now extracts the innermost complete tagged section since
+    the last [FEEDBACK] block, and returns (section_type, content).
+  - _verify_option_comparison() is new — dedicated check for [OPTION_COMPARISON].
+  - _verify_conclusion() uses build_conclusion_verification_prompt (stricter).
+  - CompactState.add_ruled_out() is called when OPTION_COMPARISON passes.
 """
 
 from __future__ import annotations
@@ -15,16 +24,15 @@ import requests
 from dotenv import load_dotenv
 
 from .medical_reasoning_prompts import MedicalReasoningPromptBuilder
+from .medical_prompts import SECTION_TAG_TO_TYPE    # single source of truth for tags
 
 
 # ══════════════════════════════════════════════════════════════════════════════
-# LOCAL vLLM CLIENT
+# LOCAL vLLM CLIENT  (unchanged)
 # ══════════════════════════════════════════════════════════════════════════════
 
 class LocalVLLMClient:
-    """Sync wrapper around vLLM's OpenAI-compatible /v1/chat/completions.
-    Separate server/port from the solver.
-    """
+    """Sync wrapper around vLLM's OpenAI-compatible /v1/chat/completions."""
 
     def __init__(
         self,
@@ -120,7 +128,7 @@ class LocalVLLMClient:
 
 
 # ══════════════════════════════════════════════════════════════════════════════
-# SNOMED CLIENT
+# SNOMED CLIENT  (unchanged)
 # ══════════════════════════════════════════════════════════════════════════════
 
 class SnomedClient:
@@ -171,7 +179,6 @@ class SnomedClient:
         return {"found": False, "query": normalized, "definition": "", "synonyms": [], "ontology_status": "NOT_FOUND"}
 
     def prefetch(self, terms: List[str], question: str = "", sleep: float = 0.3) -> Dict[str, str]:
-        """Batch fetch definitions for a list of terms. Returns {term: definition}."""
         cache: Dict[str, str] = {}
         for term in terms:
             result = self.enrich(question=question, option_text=term)
@@ -194,31 +201,31 @@ class SnomedClient:
 
 @dataclass
 class VerifierConfig:
-    run_snomed:              bool  = True
-    unknown_defaults_to_pass: bool = True
-    allow_unknown:           bool  = True
-    max_prior_context_chars: int   = 4000
-    snomed_rate_limit_sleep: float = 0.3
+    run_snomed:               bool  = True
+    unknown_defaults_to_pass: bool  = True
+    allow_unknown:            bool  = True
+    max_prior_context_chars:  int   = 4000
+    snomed_rate_limit_sleep:  float = 0.3
 
 
 # ══════════════════════════════════════════════════════════════════════════════
-# COMPACT STATE
+# COMPACT STATE  (section-aware)
 # ══════════════════════════════════════════════════════════════════════════════
 
 class CompactState:
     """
-    Bounded structured summary of verified reasoning content.
-    Replaces raw text accumulation — avoids context length blowup
-    while preserving all established facts and claims.
+    Bounded structured summary of verified reasoning.
+    Now section-aware: observations and inferences are tracked separately,
+    and ruled_out is populated from verified OPTION_COMPARISON blocks.
     """
 
     MAX_ITEMS = 8
 
     def __init__(self):
-        self.facts:               List[str] = []
-        self.claims:              List[str] = []
-        self.ruled_out:           List[str] = []
-        self.working_conclusion:  str       = ""
+        self.observations:        List[str] = []   # from verified [OBSERVATION]
+        self.inferences:          List[str] = []   # from verified [INFERENCE]
+        self.ruled_out:           List[str] = []   # from verified [OPTION_COMPARISON]
+        self.working_conclusion:  str       = ""   # from verified [CONCLUSION]
 
     def _add(self, lst: List[str], item: str) -> None:
         if item and item not in lst:
@@ -226,40 +233,48 @@ class CompactState:
         if len(lst) > self.MAX_ITEMS:
             lst[:] = lst[-self.MAX_ITEMS:]
 
-    def add_fact(self, fact: str)       -> None: self._add(self.facts, fact)
-    def add_claim(self, claim: str)     -> None: self._add(self.claims, claim)
-    def add_ruled_out(self, opt: str)   -> None: self._add(self.ruled_out, opt)
+    def add_observation(self, obs: str)   -> None: self._add(self.observations, obs)
+    def add_inference(self, inf: str)     -> None: self._add(self.inferences, inf)
+    def add_ruled_out(self, opt: str)     -> None: self._add(self.ruled_out, opt)
+
+    # kept for backward-compat with SnomedFirst subclass
+    def add_fact(self, fact: str)         -> None: self.add_observation(fact)
+    def add_claim(self, claim: str)       -> None: self.add_inference(claim)
 
     def revise_claim(self, wrong: str, correction: str) -> None:
-        self.claims = [c for c in self.claims if wrong.lower()[:40] not in c.lower()]
+        self.inferences = [c for c in self.inferences if wrong.lower()[:40] not in c.lower()]
         if correction:
-            self.add_claim(f"[REVISED] {correction}")
+            self.add_inference(f"[REVISED] {correction}")
 
     def to_str(self) -> str:
         lines = []
-        if self.facts:             lines.append("Facts: "              + "; ".join(self.facts))
-        if self.claims:            lines.append("Claims: "             + "; ".join(self.claims))
-        if self.ruled_out:         lines.append("Ruled out: "          + "; ".join(self.ruled_out))
-        if self.working_conclusion: lines.append(f"Working conclusion: {self.working_conclusion}")
+        if self.observations:
+            lines.append("Observations: " + "; ".join(self.observations))
+        if self.inferences:
+            lines.append("Inferences: " + "; ".join(self.inferences))
+        if self.ruled_out:
+            lines.append("Ruled out: " + "; ".join(self.ruled_out))
+        if self.working_conclusion:
+            lines.append(f"Working conclusion: {self.working_conclusion}")
         return "\n".join(lines) if lines else "Nothing established yet."
 
     def reset(self) -> None:
-        self.facts.clear(); self.claims.clear()
-        self.ruled_out.clear(); self.working_conclusion = ""
+        self.observations.clear()
+        self.inferences.clear()
+        self.ruled_out.clear()
+        self.working_conclusion = ""
 
 
 # ══════════════════════════════════════════════════════════════════════════════
-# MEDICAL PREPROCESSOR
+# MEDICAL PREPROCESSOR  (unchanged)
 # ══════════════════════════════════════════════════════════════════════════════
 
 class MedicalPreprocessor:
     """
     Runs before generation starts for each sample.
 
-    extract_case_facts  — converts raw case text to compact JSON (avoids
-                          re-sending long vignettes on every verification call)
+    extract_case_facts  — converts raw case text to compact JSON
     prefetch_snomed     — fetches SNOMED definitions for all option terms upfront
-                          (zero per-cycle SNOMED cost for known concepts)
     """
 
     def __init__(self, vllm: LocalVLLMClient, snomed: Optional[SnomedClient]):
@@ -267,16 +282,13 @@ class MedicalPreprocessor:
         self.snomed = snomed
 
     def extract_case_facts(self, question: str) -> str:
-        """Convert raw case text to compact structured JSON string."""
         prompt = MedicalReasoningPromptBuilder.build_case_extraction_prompt(case_text=question)
         resp   = self.vllm.call(prompt)
         if "error" in resp:
-            # Fallback: use truncated raw text rather than fail
             return question[:2000]
         return json.dumps(resp, indent=2)
 
     def prefetch_snomed(self, question: str, options: dict) -> Dict[str, str]:
-        """Pre-fetch SNOMED definitions for option terms + key question terms."""
         if self.snomed is None:
             return {}
 
@@ -284,45 +296,48 @@ class MedicalPreprocessor:
         prompt    = MedicalReasoningPromptBuilder.build_snomed_term_extraction_prompt(
             question=question,
             options_text=opts_text,
-            reasoning_chunk=opts_text,   # extract from option texts themselves
+            reasoning_chunk=opts_text,
         )
         resp  = self.vllm.call(prompt)
         terms = resp.get("terms", [])
         if not isinstance(terms, list):
             terms = []
-        terms = terms[:8]  # cap prefetch at 8 terms
+        terms = terms[:8]
 
         print(f"  [Preprocessor] Pre-fetching SNOMED for {len(terms)} terms: {terms}")
-        cache = self.snomed.prefetch(terms, question=question, sleep=self.snomed.top_k * 0.0 + 0.3)
+        cache = self.snomed.prefetch(terms, question=question, sleep=0.3)
         print(f"  [Preprocessor] Cached {len(cache)} definitions.")
         return cache
 
 
 # ══════════════════════════════════════════════════════════════════════════════
-# MEDICAL REASONING VERIFIER
+# MEDICAL REASONING VERIFIER  (structured)
 # ══════════════════════════════════════════════════════════════════════════════
+
+# Regex to find complete tagged sections. Built from SECTION_TAG_TO_TYPE so
+# there is exactly one place to add new tags.
+_SECTION_PATTERN = re.compile(
+    r"\[(" + "|".join(re.escape(t) for t in SECTION_TAG_TO_TYPE) + r")\](.*?)\[/\1\]",
+    re.DOTALL,
+)
+
 
 class MedicalReasoningVerifier:
     """
-    Classify-then-verify verifier.
+    Structured-section verifier.
 
-    Per paragraph trigger:
-      1. Split out the new paragraph (last complete unit since the last feedback block)
-      2. Classify: OBSERVATION / INFERENCE / OPTION_COMPARISON / CONCLUSION / OTHER
-      3. Route:
-           OBSERVATION      → grounding check against compact case facts
-           INFERENCE /
-           OPTION_COMPARISON → clinical validity check + options context + SNOMED cache
-           CONCLUSION       → same as inference but allow_unknown=False
-           OTHER            → pass through (transitions, revisions, etc.)
-      4. Update compact state on success
-      5. On UNKNOWN: fetch real-time SNOMED for the specific uncertain terms, retry once
+    Routing (no LLM classifier call):
+      [OBSERVATION]       → grounding check vs compact case
+      [INFERENCE]         → clinical validity + SNOMED + options context
+      [OPTION_COMPARISON] → option-elimination audit
+      [CONCLUSION]        → consistency + option alignment (no UNKNOWN)
+      anything else       → pass through
     """
 
     def __init__(
         self,
         vllm:         LocalVLLMClient,
-        snomed:       Optional[SnomedClient]  = None,
+        snomed:       Optional[SnomedClient]   = None,
         config:       Optional[VerifierConfig] = None,
         compact_case: str                      = "",
         snomed_cache: Optional[Dict[str, str]] = None,
@@ -338,29 +353,38 @@ class MedicalReasoningVerifier:
     # ── Text splitting ─────────────────────────────────────────────────────────
 
     @staticmethod
-    def _split_latest(text: str, think_open_tag: str = "<think>") -> Tuple[str, str]:
+    def _split_latest(text: str, think_open_tag: str = "<think>") -> Tuple[str, str, str]:
         """
-        Returns (prior_context, new_paragraph).
-        Extracts the last complete paragraph (by \n\n) since the last
-        [FEEDBACK] block. Each trigger delivers exactly one new paragraph
-        so the verifier judges one logical unit at a time.
-        """
-        idx         = text.rfind(think_open_tag)
-        think_text  = text[idx + len(think_open_tag):] if idx != -1 else text
+        Returns (prior_context, section_type, section_content).
 
+        Finds the LAST complete [TAG]…[/TAG] block since the last [FEEDBACK]
+        block. If none is found, returns ("", "OTHER", "").
+
+        The section content is the raw text between the open and close tags,
+        stripped of leading/trailing whitespace.
+        """
+        idx        = text.rfind(think_open_tag)
+        think_text = text[idx + len(think_open_tag):] if idx != -1 else text
+
+        # Strip [FEEDBACK]…[/FEEDBACK] blocks, take the tail since the last one
         parts         = re.split(r"\[FEEDBACK\].*?\[/FEEDBACK\]", think_text, flags=re.DOTALL)
         since_last_fb = parts[-1]
         prior_fb      = "".join(parts[:-1]).strip()
 
-        paragraphs = [p.strip() for p in since_last_fb.split("\n\n") if p.strip()]
+        # Find all complete tagged sections in since_last_fb
+        matches = list(_SECTION_PATTERN.finditer(since_last_fb))
+        if not matches:
+            return prior_fb, "OTHER", ""
 
-        if not paragraphs:
-            return prior_fb, ""
+        last_match    = matches[-1]
+        section_type  = last_match.group(1).upper()   # e.g. "INFERENCE"
+        section_body  = last_match.group(2).strip()
 
-        new_paragraph   = paragraphs[-1]
-        prior_paragraphs = "\n\n".join(paragraphs[:-1])
-        prior_context   = "\n\n".join(filter(None, [prior_fb, prior_paragraphs]))
-        return prior_context.strip(), new_paragraph
+        # prior context = everything before the last match
+        prior_in_segment = since_last_fb[:last_match.start()].strip()
+        prior_context    = "\n\n".join(filter(None, [prior_fb, prior_in_segment]))
+
+        return prior_context.strip(), section_type, section_body
 
     def _truncate_prior(self, prior: str) -> str:
         limit = self.config.max_prior_context_chars
@@ -380,7 +404,6 @@ class MedicalReasoningVerifier:
         return "\n".join(f"- {t}: {d}" for t, d in self.snomed_cache.items() if d)
 
     def _realtime_snomed(self, terms: List[str], question: str) -> None:
-        """Fetch SNOMED for terms not already in cache; updates self.snomed_cache."""
         if self.snomed is None:
             return
         for term in terms:
@@ -391,24 +414,14 @@ class MedicalReasoningVerifier:
                     print(f"  [SNOMED realtime] '{term}'")
                 time.sleep(self.config.snomed_rate_limit_sleep)
 
-    # ── Classification ─────────────────────────────────────────────────────────
-
-    def _classify(self, paragraph: str) -> str:
-        prompt = MedicalReasoningPromptBuilder.build_paragraph_classifier_prompt(
-            paragraph=paragraph
-        )
-        resp = self.vllm.call(prompt)
-        return str(resp.get("class", "OTHER")).upper()
-
     # ── Observation verification ───────────────────────────────────────────────
 
     def _verify_observation(self, paragraph: str) -> Tuple[bool, Optional[str]]:
-        """Grounding check: are all stated facts actually in the case?"""
+        """Grounding check: all stated facts must be explicitly in the case."""
         if not self.compact_case.strip():
-            # No compact case available — can't ground check, pass through
             return True, None
 
-        prompt = MedicalReasoningPromptBuilder.build_observation_grounding_prompt(
+        prompt   = MedicalReasoningPromptBuilder.build_observation_grounding_prompt(
             compact_case=self.compact_case,
             paragraph=paragraph,
         )
@@ -416,11 +429,11 @@ class MedicalReasoningVerifier:
         grounded = resp.get("grounded", True)
 
         if grounded:
-            # Add verified facts to compact state
+            # Add each verified fact line to compact state
             for line in paragraph.strip().splitlines():
                 line = line.strip().lstrip("-•0123456789. ")
                 if len(line) > 5:
-                    self.compact_state.add_fact(line)
+                    self.compact_state.add_observation(line)
             return True, None
 
         issues = resp.get("issues", [])
@@ -428,18 +441,18 @@ class MedicalReasoningVerifier:
             f"{iss.get('type', 'error')}: '{iss.get('claim', '')}' — {iss.get('reason', '')}"
             for iss in issues
         ]
-        return False, "Observation not grounded in case:\n" + "\n".join(f"  - {p}" for p in parts)
+        return False, "[OBSERVATION] not grounded in case:\n" + "\n".join(f"  - {p}" for p in parts)
 
-    # ── Inference / conclusion verification ────────────────────────────────────
+    # ── Inference verification ─────────────────────────────────────────────────
 
     def _verify_inference(
         self,
-        paragraph:  str,
-        options:    dict,
-        question:   str  = "",
-        _retried:   bool = False,    # prevents infinite recursion on UNKNOWN
+        paragraph: str,
+        options:   dict,
+        question:  str  = "",
+        _retried:  bool = False,
     ) -> Tuple[bool, Optional[str]]:
-        """Clinical validity check with options context and SNOMED cache."""
+        """Clinical validity check for one [INFERENCE] block."""
         opts_text    = self._options_text(options)
         snomed_block = self._build_snomed_block()
 
@@ -455,7 +468,7 @@ class MedicalReasoningVerifier:
         label = str(resp.get("label", "ERROR")).upper()
 
         if label == "TRUE":
-            self.compact_state.add_claim(paragraph.strip()[:100])
+            self.compact_state.add_inference(paragraph.strip()[:100])
             return True, None
 
         if label == "FALSE":
@@ -465,14 +478,14 @@ class MedicalReasoningVerifier:
                 self.compact_state.revise_claim(wrong, correction or "")
             return False, self._format_feedback(resp)
 
-        if label == "UNKNOWN" and not _retried:
+        # UNKNOWN
+        if not _retried:
             if self.snomed is not None and self.config.run_snomed:
-                # Extract the specific uncertain terms and fetch SNOMED for them
                 terms_resp = self.vllm.call(
                     MedicalReasoningPromptBuilder.build_snomed_term_extraction_prompt(
-                        question       = question,
-                        options_text   = opts_text,
-                        reasoning_chunk= paragraph,
+                        question=question,
+                        options_text=opts_text,
+                        reasoning_chunk=paragraph,
                     )
                 )
                 terms = terms_resp.get("terms", [])[:3]
@@ -480,14 +493,69 @@ class MedicalReasoningVerifier:
                     self._realtime_snomed(terms, question)
                     return self._verify_inference(paragraph, options, question, _retried=True)
 
-            if self.config.unknown_defaults_to_pass:
-                return True, None
-            return False, self._format_feedback(resp, prefix="Unresolved uncertainty: ")
-
-        # UNKNOWN after retry, or unexpected label — fail open
         if self.config.unknown_defaults_to_pass:
             return True, None
         return False, self._format_feedback(resp, prefix="Unresolved uncertainty: ")
+
+    # ── Option comparison verification ─────────────────────────────────────────
+
+    def _verify_option_comparison(
+        self,
+        paragraph: str,
+        options:   dict,
+        question:  str  = "",
+        _retried:  bool = False,
+    ) -> Tuple[bool, Optional[str]]:
+        """
+        Verifies [OPTION_COMPARISON]: all options must be addressed with
+        case-supported reasons. Ruled-out options are recorded in compact state.
+        """
+        opts_text    = self._options_text(options)
+        snomed_block = self._build_snomed_block()
+
+        prompt = MedicalReasoningPromptBuilder.build_option_comparison_verification_prompt(
+            compact_case  = self.compact_case,
+            compact_state = self.compact_state.to_str(),
+            options_text  = opts_text,
+            snomed_context= snomed_block,
+            paragraph     = paragraph,
+            allow_unknown = self.config.allow_unknown,
+        )
+        resp  = self.vllm.call(prompt)
+        label = str(resp.get("label", "ERROR")).upper()
+
+        if label == "TRUE":
+            for opt in resp.get("ruled_out", []):
+                self.compact_state.add_ruled_out(str(opt).strip())
+            return True, None
+
+        if label == "FALSE":
+            wrong      = resp.get("wrong_claim")
+            correction = resp.get("correction")
+            if wrong:
+                self.compact_state.revise_claim(wrong, correction or "")
+            return False, self._format_feedback(resp)
+
+        # UNKNOWN — try SNOMED enrichment once
+        if not _retried:
+            if self.snomed is not None and self.config.run_snomed:
+                terms_resp = self.vllm.call(
+                    MedicalReasoningPromptBuilder.build_snomed_term_extraction_prompt(
+                        question=question,
+                        options_text=opts_text,
+                        reasoning_chunk=paragraph,
+                    )
+                )
+                terms = terms_resp.get("terms", [])[:3]
+                if terms:
+                    self._realtime_snomed(terms, question)
+                    return self._verify_option_comparison(paragraph, options, question, _retried=True)
+
+        if self.config.unknown_defaults_to_pass:
+            return True, None
+        return False, self._format_feedback(resp, prefix="Unresolved uncertainty: ")
+
+    # ── Conclusion verification ────────────────────────────────────────────────
 
     def _verify_conclusion(
         self,
@@ -495,26 +563,34 @@ class MedicalReasoningVerifier:
         options:   dict,
         question:  str = "",
     ) -> Tuple[bool, Optional[str]]:
-        """Consistency + option alignment check. No UNKNOWN allowed at conclusion."""
+        """
+        Consistency + option alignment check for [CONCLUSION].
+        UNKNOWN is never allowed here.
+        """
         opts_text    = self._options_text(options)
         snomed_block = self._build_snomed_block()
 
-        prompt = MedicalReasoningPromptBuilder.build_inference_verification_prompt(
+        prompt = MedicalReasoningPromptBuilder.build_conclusion_verification_prompt(
             compact_case  = self.compact_case,
             compact_state = self.compact_state.to_str(),
             options_text  = opts_text,
             snomed_context= snomed_block,
             paragraph     = paragraph,
-            allow_unknown = False,
         )
         resp  = self.vllm.call(prompt)
         label = str(resp.get("label", "ERROR")).upper()
 
         if label == "TRUE":
-            self.compact_state.working_conclusion = paragraph.strip()[:100]
+            opt = resp.get("selected_option", "")
+            self.compact_state.working_conclusion = (
+                f"Option {opt}: {paragraph.strip()[:80]}" if opt else paragraph.strip()[:80]
+            )
             return True, None
+
         if label == "FALSE":
             return False, self._format_feedback(resp)
+
+        # Unexpected label — fail open at conclusion
         return True, None
 
     # ── Feedback formatting ────────────────────────────────────────────────────
@@ -525,10 +601,6 @@ class MedicalReasoningVerifier:
         snomed_block: Optional[str] = None,
         prefix:       str           = "",
     ) -> str:
-        """
-        Plain text only — MedicalMonitor wraps this in [FEEDBACK]...[/FEEDBACK].
-        Returns wrong_claim + correction + evidence for actionable feedback.
-        """
         lines = []
         if prefix:
             lines.append(prefix.strip())
@@ -548,9 +620,9 @@ class MedicalReasoningVerifier:
 
     # ── Logging ───────────────────────────────────────────────────────────────
 
-    def _log(self, para_type: str, label: str, paragraph: str, feedback: Optional[str]) -> None:
+    def _log(self, section_type: str, label: str, paragraph: str, feedback: Optional[str]) -> None:
         self.decision_log.append({
-            "type":              para_type,
+            "section_type":      section_type,
             "label":             label,
             "paragraph_preview": paragraph[:80],
             "feedback":          feedback,
@@ -565,24 +637,25 @@ class MedicalReasoningVerifier:
         options:  Optional[dict] = None,
     ) -> Tuple[bool, Optional[str]]:
         options = options or {}
-        _, new_paragraph = self._split_latest(text)
+        _, section_type, section_body = self._split_latest(text)
 
-        if not new_paragraph.strip():
+        if not section_body.strip():
             return True, None
 
-        para_type = self._classify(new_paragraph)
+        if section_type == "OBSERVATION":
+            passed, fb = self._verify_observation(section_body)
 
-        if para_type == "OBSERVATION":
-            passed, fb = self._verify_observation(new_paragraph)
+        elif section_type == "INFERENCE":
+            passed, fb = self._verify_inference(section_body, options, question)
 
-        elif para_type in ("INFERENCE", "OPTION_COMPARISON"):
-            passed, fb = self._verify_inference(new_paragraph, options, question)
+        elif section_type == "OPTION_COMPARISON":
+            passed, fb = self._verify_option_comparison(section_body, options, question)
 
-        elif para_type == "CONCLUSION":
-            passed, fb = self._verify_conclusion(new_paragraph, options, question)
+        elif section_type == "CONCLUSION":
+            passed, fb = self._verify_conclusion(section_body, options, question)
 
         else:
-            return True, None   # OTHER — transitions, revisions, etc.
+            return True, None   # OTHER / unrecognised — pass through
 
-        self._log(para_type, "PASS" if passed else "FAIL", new_paragraph, fb)
+        self._log(section_type, "PASS" if passed else "FAIL", section_body, fb)
         return passed, fb

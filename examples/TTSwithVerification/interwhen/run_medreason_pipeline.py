@@ -1,5 +1,11 @@
 """
-run_medreason_pipeline.py
+run_medreason_pipeline.py  —  Pipeline runner for structured medical reasoning.
+
+Changes from the free-reasoning version:
+  - Imports SYSTEM_PROMPT_MEDICAL from the updated medical_prompts (structured sections).
+  - exact_correctness_check is unchanged: [FINAL ANSWER] block format is the same.
+  - No other logic changes required — the monitor/verifier swap is transparent
+    to the pipeline runner.
 """
 
 from __future__ import annotations
@@ -25,7 +31,7 @@ tokenizer = None
 
 
 # ══════════════════════════════════════════════════════════════════════════════
-# MEDREASON LOADING
+# MEDREASON LOADING  (unchanged)
 # ══════════════════════════════════════════════════════════════════════════════
 
 class MedReasonLoader:
@@ -74,7 +80,7 @@ class MedReasonLoader:
 
 
 # ══════════════════════════════════════════════════════════════════════════════
-# SOLVER PROMPT
+# SOLVER PROMPT  (unchanged)
 # ══════════════════════════════════════════════════════════════════════════════
 
 def init_llm_server(model_name: str, max_tokens: int = 16 * 1024, port: int = 8000) -> dict:
@@ -136,14 +142,39 @@ def exact_correctness_check(output_text: str, sample: dict) -> "bool | None":
     return letter == sample["answer"].strip().upper()
 
 
+def structured_section_completeness_check(output_text: str) -> dict:
+    """
+    Diagnostic: check which structured sections were emitted by the solver.
+    Returns a dict of {section_name: bool} for reporting purposes.
+    Not used for scoring — just useful for analysing model compliance.
+    """
+    from interwhen.utils.medical_prompts import SECTION_TAG_TO_TYPE
+    think_close = "</think>"
+    think_text  = output_text.split(think_close, 1)[0] if think_close in output_text else output_text
+
+    result = {}
+    for tag in SECTION_TAG_TO_TYPE:
+        open_tag  = f"[{tag}]"
+        close_tag = f"[/{tag}]"
+        result[tag] = (open_tag in think_text and close_tag in think_text)
+    return result
+
+
 def rough_correctness_check(output_text: str, sample: dict) -> "bool | None":
     """
     Fallback scorer (word-overlap) when [FINAL ANSWER] block is absent.
+    Also checks [CONCLUSION] block as a secondary source.
     Not authoritative — use only as a fallback signal.
     """
-    m     = re.search(r"\[FINAL ANSWER\](.*?)\[/FINAL ANSWER\]", output_text, re.DOTALL)
-    block = (m.group(1) if m else output_text[-600:]).lower()
-    gt    = sample["options"].get(sample["answer"], "").lower()
+    # Try [CONCLUSION] block first (structured format)
+    m = re.search(r"\[CONCLUSION\](.*?)\[/CONCLUSION\]", output_text, re.DOTALL)
+    if m:
+        block = m.group(1).lower()
+    else:
+        m     = re.search(r"\[FINAL ANSWER\](.*?)\[/FINAL ANSWER\]", output_text, re.DOTALL)
+        block = (m.group(1) if m else output_text[-600:]).lower()
+
+    gt = sample["options"].get(sample["answer"], "").lower()
     if not gt:
         return None
     gt_words = set(gt.split())
@@ -181,14 +212,15 @@ def run(args, sample: dict) -> dict:
 
     output_text = asyncio.run(stream_completion(
         prompt,
-        llm_server     = llm_server,
-        monitors       = tuple(monitors),
-        async_execution= not args.debug,
+        llm_server      = llm_server,
+        monitors        = tuple(monitors),
+        async_execution = not args.debug,
     ))
 
-    correct        = check_correctness(output_text, sample)
-    exact_matched  = exact_correctness_check(output_text, sample)
-    decision_log   = monitors[0].verifier.decision_log if monitors else []
+    correct       = check_correctness(output_text, sample)
+    exact_matched = exact_correctness_check(output_text, sample)
+    section_audit = structured_section_completeness_check(output_text)
+    decision_log  = monitors[0].verifier.decision_log if monitors else []
 
     result = {
         "sample_id":       sample["id"],
@@ -196,7 +228,8 @@ def run(args, sample: dict) -> dict:
         "ground_truth":    sample["answer"],
         "output_text":     output_text,
         "correct":         correct,
-        "exact_matched":   exact_matched is not None,  # whether [FINAL ANSWER] block was found
+        "exact_matched":   exact_matched is not None,
+        "section_audit":   section_audit,     # which structured sections were present
         "decision_log":    decision_log,
     }
     with open(f"{args.output_dir}/outputs.jsonl", "a") as f:
@@ -215,21 +248,21 @@ def _run_wrapper(args_sample):
 def parse_args():
     ap = argparse.ArgumentParser()
 
-    ap.add_argument("--solver_lm",              type=str,  required=True)
-    ap.add_argument("--port",                   type=int,  default=8000)
-    ap.add_argument("--monitor",   "-m",        action="store_true")
-    ap.add_argument("--verifier_port",          type=int,  default=8001)
-    ap.add_argument("--verifier_model",         type=str,  default="medverifier")
-    ap.add_argument("--monitor_max_corrections",type=int,  default=5)
-    ap.add_argument("--no_snomed",              action="store_true")
-    ap.add_argument("--split",                  type=str,  default="train")
-    ap.add_argument("--max_samples",            type=int,  default=20)
-    ap.add_argument("--start_idx",              type=int,  default=0)
-    ap.add_argument("--end_idx",                type=int,  default=-1)
-    ap.add_argument("--n_processes", "-p",      type=int,  default=8)
-    ap.add_argument("--debug",       "-d",      action="store_true")
-    ap.add_argument("--continue_from", "-c",    type=str,  default=None)
-    ap.add_argument("--extra",                  type=str,  default="")
+    ap.add_argument("--solver_lm",               type=str,  required=True)
+    ap.add_argument("--port",                    type=int,  default=8000)
+    ap.add_argument("--monitor",    "-m",        action="store_true")
+    ap.add_argument("--verifier_port",           type=int,  default=8001)
+    ap.add_argument("--verifier_model",          type=str,  default="medverifier")
+    ap.add_argument("--monitor_max_corrections", type=int,  default=5)
+    ap.add_argument("--no_snomed",               action="store_true")
+    ap.add_argument("--split",                   type=str,  default="train")
+    ap.add_argument("--max_samples",             type=int,  default=20)
+    ap.add_argument("--start_idx",               type=int,  default=0)
+    ap.add_argument("--end_idx",                 type=int,  default=-1)
+    ap.add_argument("--n_processes",  "-p",      type=int,  default=8)
+    ap.add_argument("--debug",        "-d",      action="store_true")
+    ap.add_argument("--continue_from", "-c",     type=str,  default=None)
+    ap.add_argument("--extra",                   type=str,  default="")
 
     return ap.parse_args()
 
@@ -270,12 +303,23 @@ def main():
     else:
         results = [run(args, samples[0])] if samples else []
 
+    # ── Summary ──────────────────────────────────────────────────────────────
     scored = [r["correct"] for r in results if r.get("correct") is not None]
     exact  = [r["exact_matched"] for r in results]
+
     if scored:
-        print(f"\nAccuracy:       {sum(scored)}/{len(scored)} = {sum(scored)/len(scored):.2%}")
-        print(f"[FINAL ANSWER] block found in {sum(exact)}/{len(exact)} outputs")
-    print(f"Output -> {output_file}")
+        print(f"\nAccuracy:               {sum(scored)}/{len(scored)} = {sum(scored)/len(scored):.2%}")
+        print(f"[FINAL ANSWER] found:   {sum(exact)}/{len(exact)}")
+
+    # Section compliance summary
+    from interwhen.utils.medical_prompts import SECTION_TAG_TO_TYPE
+    if results and "section_audit" in results[0]:
+        print("\nStructured section compliance:")
+        for tag in SECTION_TAG_TO_TYPE:
+            count = sum(1 for r in results if r.get("section_audit", {}).get(tag, False))
+            print(f"  [{tag}]  {count}/{len(results)}")
+
+    print(f"\nOutput -> {output_file}")
 
 
 if __name__ == "__main__":

@@ -1,5 +1,16 @@
 """
-Medical Reasoning Monitor
+medical_monitor.py  —  VerifyMonitor for structured medical reasoning.
+
+Key changes from the free-reasoning version:
+  - step_extractor triggers on section CLOSE TAGS ([/OBSERVATION], [/INFERENCE],
+    [/OPTION_COMPARISON], [/CONCLUSION]) instead of bare \\n\\n. This means the
+    verifier fires exactly once per complete section — no more spurious triggers
+    on blank lines inside sections, and no missed triggers when a section ends
+    without a trailing blank line.
+  - UNKNOWN mid-section trigger is still supported: if the solver writes
+    UNKNOWN: … on its own line, we trigger immediately so the verifier can
+    inject SNOMED enrichment before the section closes.
+  - ALL_CLOSE_TAGS is imported from medical_prompts (single source of truth).
 """
 
 from __future__ import annotations
@@ -19,10 +30,13 @@ from ..utils.medical_verifier_snomed import (
     MedicalReasoningVerifierSnomedFirst,
     SnomedFirstConfig,
 )
+from ..utils.medical_prompts import ALL_CLOSE_TAGS   # e.g. ("[/OBSERVATION]", "[/INFERENCE]", …)
 
 logger = logging.getLogger(__name__)
 
-MAX_CORRECTIONS_SENTINEL = "\n[STOPPED: maximum correction attempts reached without a passing verification.]"
+MAX_CORRECTIONS_SENTINEL = (
+    "\n[STOPPED: maximum correction attempts reached without a passing verification.]"
+)
 
 
 class MedicalMonitor(VerifyMonitor):
@@ -39,30 +53,32 @@ class MedicalMonitor(VerifyMonitor):
 
     Trigger (step_extractor)
     -------------------------
-    Fires on two signals:
-      - \\n\\n  : a paragraph just completed — verify the last paragraph
-      - UNKNOWN : the solver flagged uncertainty mid-paragraph — verify immediately
+    Fires on two signals (both inside the <think> block only):
+      - Any section close tag ([/OBSERVATION], [/INFERENCE], …):
+        a complete structured section just finished → verify it.
+      - "UNKNOWN:" in the chunk:
+        the solver signalled uncertainty mid-section → verify immediately
+        so SNOMED enrichment can be injected before the section closes.
 
     Verification (verify)
     ----------------------
-    The verifier classifies each paragraph, routes to the appropriate check
-    (observation grounding / inference validity / conclusion consistency),
-    and returns (passed, feedback). On failure, feedback is injected and
-    the solver retries. On max_corrections, generation stops.
+    The verifier reads the section tag directly, routes to the appropriate
+    check, and returns (passed, feedback). On failure, feedback is injected
+    and the solver retries. On max_corrections, generation stops.
     """
 
     def __init__(
         self,
         name:            str,
         instance:        Dict[str, Any],
-        line_interval:   int   = 5,       # kept for interface parity; trigger is now \n\n
-        max_corrections: int   = 5,
-        verifier_port:   int   = 8001,
-        verifier_model:  str   = "medverifier",
-        run_snomed:      bool  = True,
-        think_open_tag:  str   = "<think>",
-        think_close_tag: str   = "</think>",
-        priority:        int   = 0,
+        line_interval:   int  = 5,        # kept for interface parity; not used
+        max_corrections: int  = 5,
+        verifier_port:   int  = 8001,
+        verifier_model:  str  = "medverifier",
+        run_snomed:      bool = True,
+        think_open_tag:  str  = "<think>",
+        think_close_tag: str  = "</think>",
+        priority:        int  = 0,
     ) -> None:
         super().__init__(name=name, priority=priority)
 
@@ -102,7 +118,7 @@ class MedicalMonitor(VerifyMonitor):
             snomed_cache = snomed_cache,
         )
 
-    # ── internal helpers ──────────────────────────────────────────────────────
+    # ── Internal helpers ──────────────────────────────────────────────────────
 
     def _is_in_think_block(self, generated_text: str) -> bool:
         # vLLM strips the opening <think> tag from the SSE stream for Qwen3
@@ -122,20 +138,28 @@ class MedicalMonitor(VerifyMonitor):
 
     def step_extractor(self, chunk: str, generated_text: str) -> Tuple[bool, Optional[str]]:
         """
-        Triggers on:
-          - UNKNOWN in the chunk: solver signaled uncertainty mid-paragraph
-          - \\n\\n  in the chunk: a paragraph just completed
+        Triggers verification on:
+          1. Any section close tag in the chunk — a complete structured section
+             just arrived; verify it.
+          2. "UNKNOWN:" in the chunk — solver flagged uncertainty mid-section;
+             trigger early so SNOMED enrichment can be injected.
 
-        Both signals carry the full accumulated generated_text so the verifier
-        can extract the relevant paragraph via _split_latest.
+        Only fires inside the <think> block.
         """
         if not self._is_in_think_block(generated_text):
             return False, None
 
-        if "UNKNOWN" in chunk:
-            return True, generated_text
+        # Primary trigger: section close tag
+        for close_tag in ALL_CLOSE_TAGS:
+            if close_tag in chunk:
+                logger.debug(
+                    "[MedicalMonitor.step_extractor] Close tag '%s' detected.", close_tag
+                )
+                return True, generated_text
 
-        if "\n\n" in chunk:
+        # Secondary trigger: UNKNOWN uncertainty signal
+        if "UNKNOWN:" in chunk:
+            logger.debug("[MedicalMonitor.step_extractor] UNKNOWN signal detected.")
             return True, generated_text
 
         return False, None

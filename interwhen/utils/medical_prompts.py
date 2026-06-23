@@ -1,33 +1,57 @@
 """
-Prompt templates for Medical Reasoning dataset integration.
+medical_prompts.py  —  Structured reasoning prompt templates.
+
+The solver is required to emit reasoning inside explicit XML-like section tags.
+The verifier reads these tags directly — no classification LLM call needed.
+
+Section schema (in order, all required):
+  [OBSERVATION] … [/OBSERVATION]        — verbatim facts from the case only
+  [INFERENCE] … [/INFERENCE]            — one clinical claim + rationale (repeatable)
+  [OPTION_COMPARISON] … [/OPTION_COMPARISON]  — systematic option elimination
+  [CONCLUSION] … [/CONCLUSION]          — final answer selection + one-line rationale
 """
 
 # ---------------------------------------------------------------------------
-# Primary solver prompt
+# Primary solver prompt  (structured)
 # ---------------------------------------------------------------------------
 
 SYSTEM_PROMPT_MEDICAL = """\
 # Medical Reasoning Assistant
 
 You are an expert clinical reasoning assistant.
-Reason through the medical case and select the correct answer option.
+Reason through the medical case using the structured format below, then state
+your final answer.
 
-## How to reason
+## Required section format
 
-Think naturally and step by step. You do not need to follow a rigid section format.
-Cover:
-  - What the case explicitly states (do not add unstated symptoms, history, labs, or risk factors)
-  - What those findings suggest clinically
-  - How the answer options compare — rule out wrong options before committing
+You MUST use these tagged sections, in this order, inside your thinking:
 
-When you are uncertain about a clinical claim, write UNKNOWN inline and note
-what information would resolve it. Continue reasoning.
+[OBSERVATION]
+List ONLY facts explicitly stated in the case: vitals, symptoms, exam findings,
+labs, imaging. Do NOT add inferred information, unstated history, or risk factors.
+[/OBSERVATION]
+
+[INFERENCE]
+State ONE clinical claim (e.g. a differential, mechanism, or pathophysiology).
+Cite which observation supports it.
+If you are uncertain, write UNKNOWN: <what would resolve it> on its own line.
+[/INFERENCE]
+
+(Repeat [INFERENCE]…[/INFERENCE] blocks as needed — one claim per block.)
+
+[OPTION_COMPARISON]
+Evaluate each answer option against your observations and inferences.
+For each option: support it or rule it out with a reason.
+[/OPTION_COMPARISON]
+
+[CONCLUSION]
+State the single best answer option letter and why, consistent with your reasoning above.
+Do NOT change your answer from what your inferences support.
+[/CONCLUSION]
 
 ## Final Answer
 
-Once you have finished thinking, write your final answer in your response —
-NOT inside your reasoning. It must appear after your thinking is complete.
-Do not change the selected option from what you concluded in your reasoning.
+After your thinking is complete, write:
 
 [FINAL ANSWER]
 Selected Option: <exact option letter, e.g. A>
@@ -37,7 +61,7 @@ Reasoning: <one sentence>
 """
 
 # ---------------------------------------------------------------------------
-# Vanilla baseline (no structure required)
+# Vanilla baseline  (no structure required — for ablation / comparison)
 # ---------------------------------------------------------------------------
 
 SYSTEM_PROMPT_VANILLA = """\
@@ -48,7 +72,7 @@ Conclude with a final answer.
 """
 
 # ---------------------------------------------------------------------------
-# State extractor (used for context compression on long traces)
+# State extractor  (used for context compression on long traces)
 # ---------------------------------------------------------------------------
 
 SYSTEM_PROMPT_STATE_EXTRACT = """\
@@ -81,7 +105,8 @@ Return an empty array [] for missing sections rather than null.
 USER_PROMPT_TEMPLATE = """\
 {case_text}
 
-Please reason through this case, then provide your Final Answer.
+Please reason through this case using the required structured sections, then
+provide your Final Answer.
 """
 
 # ---------------------------------------------------------------------------
@@ -95,3 +120,21 @@ FEEDBACK_TEMPLATE = """\
 [/FEEDBACK]
 
 """
+
+# ---------------------------------------------------------------------------
+# Section tag registry  (single source of truth — imported by verifier too)
+# ---------------------------------------------------------------------------
+
+# Maps tag name → paragraph type used by the verifier routing logic.
+SECTION_TAG_TO_TYPE: dict[str, str] = {
+    "OBSERVATION":       "OBSERVATION",
+    "INFERENCE":         "INFERENCE",
+    "OPTION_COMPARISON": "OPTION_COMPARISON",
+    "CONCLUSION":        "CONCLUSION",
+}
+
+# All recognised opening tags (used for trigger detection in step_extractor)
+ALL_OPEN_TAGS:  tuple[str, ...] = tuple(f"[{t}]"  for t in SECTION_TAG_TO_TYPE)
+
+# All recognised closing tags (used for trigger detection in step_extractor)
+ALL_CLOSE_TAGS: tuple[str, ...] = tuple(f"[/{t}]" for t in SECTION_TAG_TO_TYPE)
