@@ -2,23 +2,29 @@
 Game of 24 experiment with thinking-phase step verification.
 
 Uses ThinkingPhaseStepVerifierGame24Monitor which:
-  - Verifies the model's intermediate expressions during <think> via side-streams
-  - Injects expression extraction after </think>
+  - Verifies the model's intermediate expressions during the think-open tag via side-streams
+  - Injects expression extraction after the think-close tag
   - Verifies the final \\boxed{} expression for correctness
 """
 
 import argparse
 import asyncio
+import json
 import logging
 import os
 import re
+from datetime import datetime
+from multiprocessing import Pool
+
 import numpy as np
 
 from datasets import load_dataset
+from tqdm import tqdm
 from transformers import AutoTokenizer
 
 from interwhen import stream_completion
 from interwhen.monitors import ThinkingPhaseStepVerifierGame24Monitor
+from interwhen.utils.llm import init_llm_server, get_think_tags
 
 # ============== MODEL CONFIGURATION ==============
 MAIN_MODEL = "Qwen/QwQ-32B"
@@ -26,11 +32,15 @@ MAIN_MODEL = "Qwen/QwQ-32B"
 
 _SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
 
-# Walk up to find the repo root (contains pyproject.toml), output to its parent
+# Walk up to find the repo root (contains pyproject.toml), output into it
 _dir = _SCRIPT_DIR
 while _dir != os.path.dirname(_dir) and not os.path.isfile(os.path.join(_dir, "pyproject.toml")):
     _dir = os.path.dirname(_dir)
-_OUTPUT_ROOT = os.path.dirname(_dir)
+_OUTPUT_ROOT = _dir
+
+# Module-level objects shared with worker processes (inherited via fork)
+tokenizer = None
+
 
 def get_model_short_name(model_name: str) -> str:
     """Extract a short, filesystem-safe name from the model path."""
@@ -38,32 +48,6 @@ def get_model_short_name(model_name: str) -> str:
     short_name = short_name.replace(" ", "_").replace(":", "-")
     return short_name
 
-def get_output_dirs(main_model: str, base_dir: str = None):
-    """Create and return output directory paths based on model name."""
-    if base_dir is None:
-        base_dir = os.path.join(_OUTPUT_ROOT, "Outputs_TTS", "Gameof24results")
-    model_short_name = get_model_short_name(main_model)
-    output_base = os.path.join(base_dir, model_short_name)
-    
-    dirs = {
-        "base": output_base,
-        "reasoning": os.path.join(output_base, "Reasoning_output"),
-        "csv_saved": os.path.join(output_base, "csv_saved"),
-    }
-    
-    for dir_path in dirs.values():
-        os.makedirs(dir_path, exist_ok=True)
-    
-    return dirs
-
-def get_log_filename(main_model: str, num_examples: int, base_dir: str = None) -> str:
-    """Generate log filename based on model name."""
-    if base_dir is None:
-        base_dir = os.path.join(_OUTPUT_ROOT, "Outputs_TTS", "Gameof24results")
-    model_short_name = get_model_short_name(main_model)
-    output_base = os.path.join(base_dir, model_short_name)
-    os.makedirs(output_base, exist_ok=True)
-    return os.path.join(output_base, f"EAT_{num_examples}examples.log")
 
 def save_prompt(idx, prompt_with_answer, reason_dir):
     filename = os.path.join(reason_dir, f"reason_{idx}.txt")
@@ -71,26 +55,6 @@ def save_prompt(idx, prompt_with_answer, reason_dir):
         f.write(prompt_with_answer)
 
 logger = logging.getLogger(__name__)
-
-
-def init_llm_server(modelname, max_tokens=32768, port=8000):
-    url = f"http://localhost:{port}/v1/completions"
-    payload = {
-        "model": modelname,
-        "max_tokens": max_tokens,
-        "top_k": 20,
-        "top_p": 0.95,
-        "min_p": 0.0,
-        "do_sample": True,
-        "temperature": 0.6,
-        "stream": True,
-        "logprobs": 20,
-        "use_beam_search": False,
-        "prompt_cache": True,
-        "seed": 42
-    }
-    headers = {"Content-Type": "application/json"}
-    return {"url": url, "payload": payload, "headers": headers}
 
 
 def build_prompt(nums):
@@ -116,15 +80,15 @@ def count_tokens(text: str, tokenizer) -> int:
     return len(tokens)
 
 
-def extract_solution(text):
+def extract_solution(text, open_think="<think>", close_think="</think>"):
     
-    # Only search for \boxed{} AFTER </think> to avoid grabbing unverified
+    # Only search for \boxed{} AFTER the think-close tag to avoid grabbing unverified
     # expressions from inside the thinking trace.
-    # If model opened <think> but never closed it (hit token limit), there is
+    # If model opened the think tag but never closed it (hit token limit), there is
     # no final answer — return None.
-    if '</think>' in text:
-        search_text = text[text.rfind('</think>'):]
-    elif '<think>' in text:
+    if close_think in text:
+        search_text = text[text.rfind(close_think):]
+    elif open_think in text:
         # Model started thinking but never finished — no verified answer
         return None
     else:
@@ -212,7 +176,7 @@ def evaluate_expression(expr, expected_nums=None):
     except Exception:
         return False
 
-def evaluate_game24_answer(answer, nums):
+def evaluate_game24_answer(answer, nums, open_think="<think>", close_think="</think>"):
     """
     Evaluate a Game24 answer and return (is_correct, expr, error_message).
     
@@ -223,7 +187,7 @@ def evaluate_game24_answer(answer, nums):
     Returns:
         Tuple of (is_correct, extracted_expression, error_message)
     """
-    expr = extract_solution(answer)
+    expr = extract_solution(answer, open_think, close_think)
     if not expr:
         return False, None, "No expression found"
     if evaluate_expression(expr, expected_nums=nums):
@@ -235,144 +199,198 @@ def evaluate_game24_answer(answer, nums):
         else:
             return False, expr, "Expression does not evaluate to 24"
 
-if __name__ == "__main__":
+def run_one(task):
+    """Process a single Game24 example. Designed to run in a worker process.
 
-    parser = argparse.ArgumentParser(description="Game of 24 step-by-step solver with monitors")
-    parser.add_argument("--num_examples", "-n", type=int, default=1362, help="Number of examples to run")
-    parser.add_argument("--debug", "-d", action="store_true", help="Enable debug logs")
-    parser.add_argument("--newline_threshold", type=int, default=20, help="Number of newlines in thinking before forcing step verification")
-    parser.add_argument("--max_corrections", type=int, default=3, help="Maximum number of correction attempts per example")
-    parser.add_argument("--warmup", type=int, default=4, help="Number of \\n to skip before starting side-chain verification")
-    parser.add_argument("--model", type=str, default=MAIN_MODEL, help="Main model to use for generation")
-    parser.add_argument("--port", type=int, default=8000, help="vLLM server port")
-    args = parser.parse_args()
-
+    ``task`` is a tuple of ``(args, idx, nums, reason_dir)``.  Returns a result
+    dict that the main process aggregates.
+    """
+    args, idx, nums, reason_dir = task
     main_model = args.model
-
-    output_dirs = get_output_dirs(main_model)
-    logfile = get_log_filename(main_model, args.num_examples)
-    reason_dir = output_dirs["reasoning"]
-
-    log_level = logging.DEBUG if args.debug else logging.INFO
-
-    logging.basicConfig(
-        level=log_level,
-        format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
-        handlers=[
-            logging.FileHandler(logfile, mode="w"),
-            logging.StreamHandler()
-        ],
-        force=True,
-    )
-
-    logger.info(f"Main model: {main_model}")
-    logger.info(f"Output directory: {output_dirs['base']}")
-    logger.info(f"Newline threshold: {args.newline_threshold}")
-    logger.info(f"Warmup: {args.warmup}")
-
-    dataset = load_dataset("nlile/24-game", split="train")
+    think_tags = get_think_tags(main_model)
 
     llm_server = init_llm_server(main_model, port=args.port)
 
-    logger.info(f"Loading tokenizer for {main_model}...")
-    tokenizer = AutoTokenizer.from_pretrained(main_model, trust_remote_code=True)
-    logger.info("Tokenizer loaded successfully.")
+    prompt = build_prompt(nums)
+    full_prompt = tokenizer.apply_chat_template(
+        [{"role": "user", "content": prompt}],
+        tokenize=False,
+        add_generation_prompt=True,
+        enable_thinking=True,
+    )
 
-    num_correct = 0
-    num_attempted = 0  # model produced a real answer (not "no solution" and not missing after </think>)
-    num_excluded = 0   # excluded from soundness (no solution or token budget exceeded)
-    N = args.num_examples
-    total_generated_tokens = 0
-    generated_token_counts = []
-
-    indices = np.linspace(0, len(dataset)-1, N, dtype=int)
-
-    for idx in indices:
-        example = dataset[idx]
-        nums = example["numbers"]
-        prompt = build_prompt(nums)
-        full_prompt = f"<|im_start|>user\n{prompt}<|im_end|>\n<|im_start|>assistant\n"
-
-        monitor = ThinkingPhaseStepVerifierGame24Monitor(
+    if args.monitor:
+        monitors = (ThinkingPhaseStepVerifierGame24Monitor(
             name="game24_verifier",
             original_numbers=nums,
             llm_server=llm_server,
             prompt=full_prompt,
             newline_threshold=args.newline_threshold,
             max_corrections=args.max_corrections,
-            answer_start_token="</think>",
+            answer_start_token=think_tags['close'],
             warmup_newlines=args.warmup,
-        )
+        ),)
+    else:
+        monitors = ()
 
-        logger.info(f"---- Example {idx+1} ----")
-        logger.info(f"Numbers: {nums}")
+    try:
+        answer = asyncio.run(stream_completion(
+            full_prompt,
+            llm_server=llm_server,
+            monitors=monitors,
+            add_delay=False,
+            termination_requires_validation=False,
+            async_execution=True,
+            tokenizer=tokenizer,
+        ))
+    except Exception as e:
+        logger.error(f"Error running example {idx}: {e}")
+        return None
 
-        try:
-            answer = asyncio.run(stream_completion(
-                full_prompt,
-                llm_server=llm_server,
-                monitors=(monitor,),
-                add_delay=False,
-                termination_requires_validation=False,
-                async_execution=True
-            ))
-        except Exception as e:
-            logger.error(f"Error running example {idx}: {e}")
-            continue
+    save_prompt(idx, answer, reason_dir)
 
-        save_prompt(idx, answer, reason_dir)
-        logger.info(f"Raw final output:\n{answer}")
+    generated_tokens = count_tokens(answer, tokenizer)
+    is_correct, expr, message = evaluate_game24_answer(
+        answer, nums, think_tags['open'], think_tags['close']
+    )
+    gave_no_solution = (expr is not None and "no solution" in expr.strip().lower())
+    no_expr_found = (expr is None)
+    attempted = not (gave_no_solution or no_expr_found)
 
-        generated_tokens = count_tokens(answer, tokenizer)
-        generated_token_counts.append(generated_tokens)
-        total_generated_tokens += generated_tokens
-        logger.info(f"Generated tokens in this example: {generated_tokens}")
+    return {
+        "idx": int(idx),
+        "numbers": list(nums),
+        "expr": expr,
+        "is_correct": bool(is_correct),
+        "attempted": bool(attempted),
+        "generated_tokens": int(generated_tokens),
+        "message": message,
+        "output_text": answer,
+    }
 
-        is_correct, expr, message = evaluate_game24_answer(answer, nums)
-        # Attempted: model produced a real answer (not "no solution" and not missing after </think>)
-        gave_no_solution = (expr is not None and "no solution" in expr.strip().lower())
-        no_expr_found = (expr is None)
-        attempted = not (gave_no_solution or no_expr_found)
-        if attempted:
-            num_attempted += 1
+
+if __name__ == "__main__":
+
+    parser = argparse.ArgumentParser(description="Game of 24 step-by-step solver with monitors")
+    parser.add_argument("--num_examples", "-n", type=int, default=1362, help="Number of examples to run")
+    parser.add_argument("--debug", "-d", action="store_true", help="Enable debug logs and single-process mode")
+    parser.add_argument("--newline_threshold", type=int, default=20, help="Number of newlines in thinking before forcing step verification")
+    parser.add_argument("--max_corrections", type=int, default=3, help="Maximum number of correction attempts per example")
+    parser.add_argument("--warmup", type=int, default=4, help="Number of \\n to skip before starting side-chain verification")
+    parser.add_argument("--model", type=str, default=MAIN_MODEL, help="Main model to use for generation")
+    parser.add_argument("--port", type=int, default=8000, help="vLLM server port")
+    parser.add_argument("--monitor", "-m", action="store_true", help="Enable thinking-phase step verification monitor (default: vanilla CoT)")
+    parser.add_argument("--n_processes", "-p", type=int, default=16, help="Number of parallel worker processes")
+    parser.add_argument("--n_exps", type=int, default=1, help="Number of independent sampling runs (produces outputs_solver_{i}.jsonl)")
+    parser.add_argument("--extra", type=str, default="", help="Extra text description for the output directory")
+    args = parser.parse_args()
+
+    main_model = args.model
+    N = args.num_examples
+
+    # ---- Unique, timestamped run directory ----
+    model_short = get_model_short_name(main_model)
+    mode = "monitor" if args.monitor else "solveronly"
+    run_name = f"{model_short}_{mode}"
+    if args.monitor:
+        run_name += f"_maxcorr{args.max_corrections}_nl{args.newline_threshold}"
+    run_name += f"_nexps{args.n_exps}"
+    if args.debug:
+        run_name += "_debug"
+
+    output_dir = os.path.join(
+        _OUTPUT_ROOT, "Outputs_TTS", "Gameof24results",
+        f'{datetime.now().strftime("%Y%m%d_%H%M%S")}-{run_name}',
+    )
+    if args.extra:
+        output_dir += f"-{args.extra}"
+    reason_dir = os.path.join(output_dir, "Reasoning_output")
+    os.makedirs(reason_dir, exist_ok=True)
+
+    logfile = os.path.join(output_dir, "run.log")
+
+    log_level = logging.DEBUG if args.debug else logging.INFO
+    logging.basicConfig(
+        level=log_level,
+        format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
+        handlers=[logging.FileHandler(logfile, mode="w")],
+        force=True,
+    )
+
+    with open(os.path.join(output_dir, "args.json"), "w") as f:
+        json.dump(vars(args), f, indent=4)
+
+    logger.info(f"Main model: {main_model}")
+    logger.info(f"Output directory: {output_dir}")
+    logger.info(f"Monitor: {args.monitor} | Examples: {N} | Processes: {args.n_processes}")
+
+    dataset = load_dataset("nlile/24-game", split="train")
+
+    tokenizer = AutoTokenizer.from_pretrained(main_model, trust_remote_code=True)
+
+    indices = np.linspace(0, len(dataset) - 1, N, dtype=int)
+
+    for exp_i in range(args.n_exps):
+        if args.n_exps > 1:
+            print(f"\n=== Run {exp_i + 1}/{args.n_exps} ===")
+
+        run_reason_dir = os.path.join(reason_dir, f"solver_{exp_i}")
+        os.makedirs(run_reason_dir, exist_ok=True)
+        outputs_file = os.path.join(output_dir, f"outputs_solver_{exp_i}.jsonl")
+        results_file = os.path.join(output_dir, f"results_solver_{exp_i}.txt")
+
+        tasks = [
+            (args, int(idx), dataset[int(idx)]["numbers"], run_reason_dir)
+            for idx in indices
+        ]
+
+        if args.debug:
+            results = [run_one(t) for t in tqdm(tasks, desc="Game24")]
         else:
-            num_excluded += 1
+            with Pool(processes=args.n_processes) as pool:
+                results = list(tqdm(
+                    pool.imap_unordered(run_one, tasks),
+                    total=len(tasks),
+                    desc="Game24",
+                ))
 
-        if expr:
-            logger.info(f"Extracted expression: {expr}")
-        logger.info(message)
-        if is_correct:
-            num_correct += 1
+        results = [r for r in results if r is not None]
 
-    avg_generated_tokens = total_generated_tokens / N if N > 0 else 0
-    accuracy = num_correct / N if N > 0 else 0
-    soundness = num_correct / num_attempted if num_attempted > 0 else 0
+        with open(outputs_file, "w") as f:
+            for r in results:
+                f.write(json.dumps(r) + "\n")
 
-    print(f"\nFinal Accuracy: {num_correct}/{N} ({accuracy:.2%})")
-    print(f"Soundness: {num_correct}/{num_attempted} ({soundness:.2%})")
-    print(f"Excluded from soundness (no solution / token budget exceeded): {num_excluded}")
-    print(f"Average Generated Tokens: {avg_generated_tokens:.2f}")
-    print(f"Total Generated Tokens: {total_generated_tokens}")
+        num_correct = sum(r["is_correct"] for r in results)
+        num_attempted = sum(r["attempted"] for r in results)
+        num_excluded = len(results) - num_attempted
+        generated_token_counts = [r["generated_tokens"] for r in results]
+        total_generated_tokens = sum(generated_token_counts)
 
-    results_file = logfile.replace('.log', '_results.txt')
-    with open(results_file, 'w') as f:
-        f.write(f"Game of 24 Evaluation Results\n")
-        f.write(f"{'='*50}\n\n")
-        f.write(f"Model: {main_model}\n")
-        f.write(f"Number of Examples: {N}\n\n")
-        f.write(f"Results:\n")
-        f.write(f"---------\n")
-        f.write(f"Correct: {num_correct}/{N}\n")
-        f.write(f"Accuracy: {accuracy:.2%}\n")
-        f.write(f"Soundness: {num_correct}/{num_attempted} = {soundness:.2%}\n")
-        f.write(f"Excluded from soundness (no solution / token budget exceeded): {num_excluded}\n\n")
-        f.write(f"Generated Token Statistics:\n")
-        f.write(f"---------------------------\n")
-        f.write(f"Total Generated Tokens: {total_generated_tokens}\n")
-        f.write(f"Average Generated Tokens: {avg_generated_tokens:.2f}\n")
-        if generated_token_counts:
-            f.write(f"Min Generated Tokens: {min(generated_token_counts)}\n")
-            f.write(f"Max Generated Tokens: {max(generated_token_counts)}\n")
-            f.write(f"Std Dev: {np.std(generated_token_counts):.2f}\n")
-    logger.info(f"Results saved to {results_file}")
-    print(f"Results saved to {results_file}")
+        avg_generated_tokens = total_generated_tokens / N if N > 0 else 0
+        accuracy = num_correct / N if N > 0 else 0
+        soundness = num_correct / num_attempted if num_attempted > 0 else 0
+
+        with open(results_file, "w") as f:
+            f.write("Game of 24 Evaluation Results\n")
+            f.write(f"{'='*50}\n\n")
+            f.write(f"Model: {main_model}\n")
+            f.write(f"Number of Examples: {N}\n\n")
+            f.write("Results:\n")
+            f.write("---------\n")
+            f.write(f"Correct: {num_correct}/{N}\n")
+            f.write(f"Accuracy: {accuracy:.2%}\n")
+            f.write(f"Soundness: {num_correct}/{num_attempted} = {soundness:.2%}\n")
+            f.write(f"Excluded from soundness (no solution / token budget exceeded): {num_excluded}\n\n")
+            f.write("Generated Token Statistics:\n")
+            f.write("---------------------------\n")
+            f.write(f"Total Generated Tokens: {total_generated_tokens}\n")
+            f.write(f"Average Generated Tokens: {avg_generated_tokens:.2f}\n")
+            if generated_token_counts:
+                f.write(f"Min Generated Tokens: {min(generated_token_counts)}\n")
+                f.write(f"Max Generated Tokens: {max(generated_token_counts)}\n")
+                f.write(f"Std Dev: {np.std(generated_token_counts):.2f}\n")
+
+        logger.info(
+            f"Run {exp_i}: Accuracy={accuracy:.2%} Soundness={soundness:.2%} "
+            f"Results saved to {results_file}"
+        )

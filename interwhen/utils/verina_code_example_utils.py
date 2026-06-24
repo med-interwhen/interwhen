@@ -283,10 +283,16 @@ Provide ONLY the function body expression wrapped in [CODE]...[/CODE] tags."""
     return system_prompt, user_prompt
 
 
-def build_full_prompt(data: BenchmarkData) -> str:
-    """Build the full prompt string for the LLM"""
+def build_full_prompt(data: BenchmarkData, tokenizer) -> str:
+    """Build the full prompt string for the LLM using the model's chat template."""
     system_prompt, user_prompt = build_code_gen_prompt(data)
-    return f"<|im_start|>system\n{system_prompt}<|im_end|>\n<|im_start|>user\n{user_prompt}<|im_end|>\n<|im_start|>assistant\n"
+    return tokenizer.apply_chat_template(
+        [{"role": "system", "content": system_prompt},
+         {"role": "user", "content": user_prompt}],
+        tokenize=False,
+        add_generation_prompt=True,
+        enable_thinking=True,
+    )
 
 # Code Extraction and Eval
 def strip_function_definition(code: str) -> str:
@@ -320,26 +326,28 @@ def strip_function_definition(code: str) -> str:
     return code
 
 
-def extract_code_from_response(response: str) -> str:
+def extract_code_from_response(response: str, open_think: str = "<think>", close_think: str = "</think>") -> str:
     """Extract code from the LAST [CODE]...[/CODE] tags or lean code blocks.
     
     Handles cases where:
-    1. Response has <think>...</think> reasoning block
+    1. Response has the reasoning/thinking block
     2. [CODE] tag exists but [/CODE] may be missing (truncated response)
     3. Code is in markdown lean blocks
     4. Model outputs [CORE] or other variants instead of [CODE]
     5. Model uses mismatched tags like [CORE]...[/CODE]
     6. Model includes full function definition instead of just the body
     """
-    # Step 1: Remove <think>...</think> block entirely (case insensitive)
+    # Step 1: Remove think block entirely
     # This prevents extracting reasoning text as code
-    cleaned = re.sub(r'<think>.*?</think>', '', response, flags=re.DOTALL | re.IGNORECASE)
+    open_pattern = re.escape(open_think)
+    close_pattern = re.escape(close_think)
+    cleaned = re.sub(f'{open_pattern}.*?{close_pattern}', '', response, flags=re.DOTALL | re.IGNORECASE)
     
-    # If </think> exists but <think> doesn't match (partial), take everything after </think>
+    # If close_think exists but open_think doesn't match (partial), take everything after close_think
     if not cleaned.strip() or cleaned.strip() == response.strip():
-        think_end = response.lower().rfind("</think>")
+        think_end = response.lower().rfind(close_think.lower())
         if think_end != -1:
-            cleaned = response[think_end + len("</think>"):]
+            cleaned = response[think_end + len(close_think):]
     
     extracted_code = None
     

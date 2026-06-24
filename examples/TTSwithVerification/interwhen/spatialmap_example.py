@@ -2,27 +2,30 @@
 SpatialMap experiment with thinking-phase step verification.
 
 Uses ThinkingPhaseStepVerifierSpatialMapMonitor which:
-  - Verifies the model's directional claims during <think> via side-streams
-  - Injects a structured step format after </think> (no meta-prompt needed)
+  - Verifies the model's directional claims during the think-open tag via side-streams
+  - Injects a structured step format after the think-close tag (no meta-prompt needed)
   - Verifies each step as the model fills in the structured template
 """
 
 import argparse
 import asyncio
-import csv
 import json
 import logging
 import os
 import re
+from datetime import datetime
+from multiprocessing import Pool
+
 import numpy as np
 
 from datasets import load_dataset
+from tqdm import tqdm
 from transformers import AutoTokenizer
 
 from interwhen import stream_completion
 from interwhen.monitors import ThinkingPhaseStepVerifierSpatialMapMonitor
+from interwhen.utils.llm import init_llm_server, get_think_tags
 
-logging.basicConfig(level=logging.INFO, format='%(message)s')
 logger = logging.getLogger(__name__)
 
 # ============== MODEL CONFIGURATION ==============
@@ -31,11 +34,16 @@ MAIN_MODEL = "Qwen/QwQ-32B"
 
 _SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
 
-# Walk up to find the repo root (contains pyproject.toml), output to its parent
+# Walk up to find the repo root (contains pyproject.toml), output into it
 _dir = _SCRIPT_DIR
 while _dir != os.path.dirname(_dir) and not os.path.isfile(os.path.join(_dir, "pyproject.toml")):
     _dir = os.path.dirname(_dir)
-_OUTPUT_ROOT = os.path.dirname(_dir)
+_OUTPUT_ROOT = _dir
+
+# Module-level objects shared with worker processes (inherited via fork)
+tokenizer = None
+dataset = None
+reason_dir = None
 
 
 def get_model_short_name(model_name: str) -> str:
@@ -43,25 +51,6 @@ def get_model_short_name(model_name: str) -> str:
     short_name = model_name.split("/")[-1]
     short_name = short_name.replace(" ", "_").replace(":", "-")
     return short_name
-
-
-def get_output_dirs(main_model: str, base_dir: str = None):
-    """Create and return output directory paths based on model name."""
-    if base_dir is None:
-        base_dir = os.path.join(_OUTPUT_ROOT, "Outputs_TTS", "SpatialMapResults")
-    model_short_name = get_model_short_name(main_model)
-    output_base = os.path.join(base_dir, model_short_name)
-    
-    dirs = {
-        "base": output_base,
-        "reasoning": os.path.join(output_base, "Reasoning_output"),
-        "csv_saved": os.path.join(output_base, "csv_saved"),
-    }
-    
-    for dir_path in dirs.values():
-        os.makedirs(dir_path, exist_ok=True)
-    
-    return dirs
 
 
 def get_question_type(idx: int) -> str:
@@ -88,8 +77,8 @@ def build_simple_prompt(example):
     return pre_prompt, description_trimmed
 
 
-def extract_solution(text: str) -> str:
-    """Extract the boxed answer from the response (after </think>)."""
+def extract_solution(text: str, close_think: str = "</think>") -> str:
+    """Extract the boxed answer from the response (after the think-close tag)."""
     patterns = [
         r"\\boxed\{([^}]*)\}",
         r"boxed\{([^}]*)\}",
@@ -97,8 +86,8 @@ def extract_solution(text: str) -> str:
         r"answer[:\s]*([A-D])",
         r"(?:^|\n)([A-D])(?:\s|$|\.)",
     ]
-    if "</think>" in text:
-        answer_section = text.split("</think>")[-1]
+    if close_think in text:
+        answer_section = text.split(close_think)[-1]
     else:
         answer_section = text
     answer_section = re.sub(r'<format>.*?</format>', '', answer_section, flags=re.DOTALL)
@@ -118,37 +107,15 @@ def count_tokens(text: str, tokenizer) -> int:
     return len(tokens)
 
 
-def init_llm_server(model_name, max_tokens=20480, port=8000):
-    """Initialize LLM server configuration."""
-    url = f"http://localhost:{port}/v1/completions"
-    payload = {
-        "model": model_name,
-        "max_tokens": max_tokens,
-        "top_k": 20,
-        "top_p": 0.95,
-        "min_p": 0.0,
-        "do_sample": True,
-        "temperature": 0.6,
-        "stream": True,
-        "logprobs": 20,
-        "use_beam_search": False,
-        "prompt_cache": True,
-        "seed": 42
-    }
-    headers = {"Content-Type": "application/json"}
-    return {"url": url, "payload": payload, "headers": headers}
-
-
 def save_prompt(idx, prompt_with_answer, reason_dir):
     """Save reasoning trace to file."""
     os.makedirs(reason_dir, exist_ok=True)
     filename = os.path.join(reason_dir, f"reason_{idx}.txt")
     with open(filename, "w", encoding="utf-8") as f:
         f.write(prompt_with_answer)
-    logger.info(f"Saved reasoning trace to {filename}")
 
 
-def evaluate_spatialmap_answer(answer, options, ground_truth):
+def evaluate_spatialmap_answer(answer, options, ground_truth, close_think="</think>"):
     """
     Evaluate a SpatialMap MCQ answer and return (is_correct, extracted_answer, message).
     
@@ -160,7 +127,7 @@ def evaluate_spatialmap_answer(answer, options, ground_truth):
     Returns:
         Tuple of (is_correct, extracted_answer, message)
     """
-    sol = extract_solution(answer)
+    sol = extract_solution(answer, close_think)
     gt_sol = str(ground_truth).strip()
     if not sol:
         return False, None, "No expression found"
@@ -179,99 +146,37 @@ def evaluate_spatialmap_answer(answer, options, ground_truth):
     return False, sol, f"Solution '{sol}' not found in options or ground truth"
 
 
-if __name__ == "__main__":
-    parser = argparse.ArgumentParser(description="Run SpatialMap experiments with StepVerifierSpatialMapMonitor")
-    parser.add_argument("--model", type=str, default=MAIN_MODEL,
-                        help="Model name for generation")
-    parser.add_argument("--indices", type=str, default=None,
-                        help="Comma-separated indices to run (e.g., '0,100,200')")
-    parser.add_argument("--start", type=int, default=0, help="Start index")
-    parser.add_argument("--end", type=int, default=1500, help="End index")
-    parser.add_argument("--num_examples", "-n", type=int, default=None,
-                        help="Number of examples to run (overrides start/end)")
-    parser.add_argument("--max_corrections", type=int, default=5,
-                        help="Maximum number of correction attempts per example")
-    parser.add_argument("--port", type=int, default=8000, help="vLLM server port")
-    parser.add_argument("--debug", "-d", action="store_true", help="Enable debug logging")
-    parser.add_argument("--newline_threshold", type=int, default=20,
-                        help="Number of \\n in thinking before triggering side verification")
-    parser.add_argument("--warmup", type=int, default=0,
-                        help="Number of \\n to skip before starting side-chain verification (warmup period)")
-    args = parser.parse_args()
+def run_one(task):
+    """Process a single SpatialMap example in a worker process.
 
-    logger.info(f"Thinking-phase verification: always on")
-    logger.info(f"  Newline threshold: {args.newline_threshold}")
-    logger.info(f"  Warmup: {args.warmup}")
-    
-    if args.debug:
-        logging.getLogger().setLevel(logging.DEBUG)
-    
-    # Load dataset (spatial_map_text_only has 1500 examples)
-    dataset = load_dataset("microsoft/VISION_LANGUAGE", 'spatial_map_text_only', split='val')
-    
-    # Setup LLM server
-    llm_server = init_llm_server(args.model, port=args.port)
-    
-    # Load tokenizer for accurate token counting
-    logger.info(f"Loading tokenizer for {args.model}...")
-    tokenizer = AutoTokenizer.from_pretrained(args.model, trust_remote_code=True)
-    logger.info("Tokenizer loaded successfully.")
-    
-    # Setup output directory
-    output_dirs = get_output_dirs(args.model)
-    reason_dir = output_dirs["reasoning"]
-    
-    # Determine indices
-    max_idx = len(dataset) - 1
-    if args.indices:
-        indices = [int(x.strip()) for x in args.indices.split(",")]
-    elif args.num_examples:
-        # Sample evenly across all 1500 examples (0-1499)
-        indices = np.linspace(0, min(max_idx, 1499), args.num_examples, dtype=int)
-    else:
-        indices = range(args.start, min(args.end, max_idx + 1))
-    
-    # Stats tracking
-    results = []
-    total_correct = 0
-    total_examples = 0
-    total_reasoning_tokens = 0
-    num_attempted = 0  # examples where a \boxed{} answer was produced (not "no solution")
-    reasoning_token_counts = []
-    per_example_results = []  # list of dicts for CSV
-    
-    # Per-type stats
-    stats_by_type = {
-        "direction": {"total": 0, "correct": 0},
-        "object": {"total": 0, "correct": 0},
-        "counting": {"total": 0, "correct": 0},
-    }
-    
-    for idx in indices:
-        example = dataset[idx]
-        pre_prompt, description_trimmed = build_simple_prompt(example)
-        if str(example.get("ground_truth", "")).strip() == "Q4":
-            target_options = ["A", "B"]
-        else:
-            target_options = ["A", "B", "C", "D"]
-        keys = "|".join(map(re.escape, target_options))
-        pattern = r'\b([A-D])\.\s*(.*?)(?=\s*[A-D]\.|$)'
-        raw = re.findall(pattern, description_trimmed, flags=re.DOTALL)
+    ``task`` is ``(args, idx)``.  Returns a result dict that the main process
+    aggregates, or ``None`` on failure.
+    """
+    args, idx = task
+    main_model = args.model
+    think_tags = get_think_tags(main_model)
 
-        options = {k: v.strip().rstrip(".") for k, v in raw}
+    llm_server = init_llm_server(main_model, context_length=20480, port=args.port)
 
-        question_type = get_question_type(idx)
+    example = dataset[idx]
+    pre_prompt, description_trimmed = build_simple_prompt(example)
 
-        full_prompt = f"<|im_start|>system\n{pre_prompt}<|im_end|>\n<|im_start|>user\n{description_trimmed}<|im_end|>\n<|im_start|>assistant\n"
-        
-        logger.info(f"\n{'='*60}")
-        logger.info(f"Example {idx} ({question_type})")
-        logger.info(f"{'='*60}")
-        
-        # Always use ThinkingPhaseStepVerifierSpatialMapMonitor:
-        # Phase 1 — verifies during <think> via side-streams
-        # Phase 2a — injects structured step format after </think>
-        # Phase 2b — verifies structured output as model fills it in
+    pattern = r'\b([A-D])\.\s*(.*?)(?=\s*[A-D]\.|$)'
+    raw = re.findall(pattern, description_trimmed, flags=re.DOTALL)
+    options = {k: v.strip().rstrip(".") for k, v in raw}
+
+    question_type = get_question_type(idx)
+
+    full_prompt = tokenizer.apply_chat_template(
+        [{"role": "system", "content": pre_prompt}, {"role": "user", "content": description_trimmed}],
+        tokenize=False,
+        add_generation_prompt=True,
+        enable_thinking=True,
+    )
+
+    num_relations = 0
+    verified_claims = 0
+    if args.monitor:
         monitor = ThinkingPhaseStepVerifierSpatialMapMonitor(
             name="spatialmap_thinking_verifier",
             problem_text=description_trimmed,
@@ -279,177 +184,190 @@ if __name__ == "__main__":
             prompt=full_prompt,
             newline_threshold=args.newline_threshold,
             max_corrections=args.max_corrections,
-            answer_start_token="</think>",
+            answer_start_token=think_tags['close'],
             warmup_newlines=args.warmup,
         )
-        
-        logger.info(f"Z3 solver initialized with {len(monitor.z3_solver.parsed_relations)} relations")
-        
-        # Run with stream_completion
-        try:
-            answer = asyncio.run(stream_completion(
-                full_prompt,
-                llm_server=llm_server,
-                monitors=(monitor,),
-                add_delay=False,
-                termination_requires_validation=False,
-                async_execution=True
-            ))
-        except Exception as e:
-            logger.error(f"Error running example {idx}: {e}")
-            import traceback
-            traceback.print_exc()
-            continue
-        
-        # Save reasoning trace
-        save_prompt(int(idx), answer, reason_dir)
-        logger.info(f"Raw final output:\n{answer}")
+        monitors = (monitor,)
+    else:
+        monitor = None
+        monitors = ()
 
-        # Count generated tokens
-        reasoning_tokens = count_tokens(answer, tokenizer)
-        total_reasoning_tokens += reasoning_tokens
-        reasoning_token_counts.append(reasoning_tokens)
-        logger.info(f"Generated tokens in this example: {reasoning_tokens}")
-        
-        # Evaluate the answer
-        gt_sol = str(example.get("ground_truth", "")).strip()
-        is_correct, extracted_answer, message = evaluate_spatialmap_answer(answer, options, gt_sol)
-        
-        # "attempted" = model produced a real \boxed{} answer (not "no solution")
-        attempted = (extracted_answer is not None and extracted_answer.strip().lower() != "no solution")
-        if attempted:
-            num_attempted += 1
-        
-        if extracted_answer:
-            logger.info(f"Extracted answer: {extracted_answer}")
-        logger.info(message)
-        
-        if is_correct:
-            total_correct += 1
-            stats_by_type[question_type]["correct"] += 1
-            
-        total_examples += 1
-        stats_by_type[question_type]["total"] += 1
-        
-        # Log result
-        result = {
-            'idx': int(idx),
-            'question_type': question_type,
-            'correct': is_correct,
-            'attempted': attempted,
-            'sol': extracted_answer,
-            'gt': gt_sol,
-            'reasoning_tokens': reasoning_tokens,
-            'num_relations': len(monitor.z3_solver.parsed_relations),
-            'verified_claims': len(monitor.verified_claims),
-        }
-        results.append(result)
-        
-        per_example_results.append({
-            "index": int(idx),
-            "question_type": question_type,
-            "correct": is_correct,
-            "attempted": attempted,
-            "sol": extracted_answer if extracted_answer else "",
-            "gt": gt_sol,
-            "tokens": reasoning_tokens,
-            "num_relations": len(monitor.z3_solver.parsed_relations),
-            "verified_claims": len(monitor.verified_claims),
-            "message": message,
-        })
-        
-        logger.info(f"Result: sol={extracted_answer}, gt={gt_sol}, correct={is_correct}, attempted={attempted}")
-        logger.info(f"Verified claims: {len(monitor.verified_claims)}")
-        logger.info(f"Reasoning tokens: {reasoning_tokens}")
-    
-    # Compute final metrics
-    accuracy = total_correct / total_examples if total_examples > 0 else 0
-    soundness = total_correct / num_attempted if num_attempted > 0 else 0  # correct / attempted
-    avg_reasoning_tokens = total_reasoning_tokens / total_examples if total_examples > 0 else 0
-    
-    logger.info(f"\n{'='*60}")
-    logger.info(f"FINAL RESULTS")
-    logger.info(f"{'='*60}")
-    logger.info(f"Total examples: {total_examples}")
-    logger.info(f"Correct: {total_correct}")
-    logger.info(f"Attempted (produced \\boxed answer): {num_attempted}/{total_examples}")
-    logger.info(f"Accuracy: {accuracy:.4f} ({total_correct}/{total_examples})")
-    logger.info(f"Soundness: {soundness:.4f} ({total_correct}/{num_attempted})")
-    logger.info(f"Total reasoning tokens: {total_reasoning_tokens}")
-    logger.info(f"Avg reasoning tokens: {avg_reasoning_tokens:.1f}")
-    
-    # Per-type breakdown
-    logger.info(f"\nPer-type breakdown:")
-    for qtype, stats in stats_by_type.items():
-        if stats["total"] > 0:
-            acc = stats["correct"] / stats["total"]
-            logger.info(f"  {qtype}: {acc:.4f} ({stats['correct']}/{stats['total']})")
-    
-    print(f"\nFinal Accuracy: {total_correct}/{total_examples} ({accuracy:.2%})")
-    print(f"Soundness: {total_correct}/{num_attempted} ({soundness:.2%})")
-    print(f"Average Reasoning Tokens: {avg_reasoning_tokens:.2f}")
-    print(f"Total Reasoning Tokens: {total_reasoning_tokens}")
-    
-    # Save per-example CSV
-    csv_file = os.path.join(output_dirs["csv_saved"], f"results_{total_examples}examples.csv")
-    with open(csv_file, 'w', newline='') as f:
-        writer = csv.DictWriter(f, fieldnames=["index", "question_type", "correct", "attempted", "sol", "gt", "tokens", "num_relations", "verified_claims", "message"])
-        writer.writeheader()
-        writer.writerows(per_example_results)
-    logger.info(f"Per-example CSV saved to {csv_file}")
-    
-    # Save summary
-    summary = {
-        'model': args.model,
-        'total_examples': total_examples,
-        'correct': total_correct,
-        'attempted': num_attempted,
-        'accuracy': accuracy,
-        'soundness': soundness,
-        'total_reasoning_tokens': total_reasoning_tokens,
-        'avg_reasoning_tokens': avg_reasoning_tokens,
-        'max_corrections': args.max_corrections,
-        'stats_by_type': stats_by_type,
-        'results': results,
+    try:
+        answer = asyncio.run(stream_completion(
+            full_prompt,
+            llm_server=llm_server,
+            monitors=monitors,
+            add_delay=False,
+            termination_requires_validation=False,
+            async_execution=True,
+            tokenizer=tokenizer,
+        ))
+    except Exception as e:
+        logger.error(f"Error running example {idx}: {e}")
+        return None
+
+    save_prompt(int(idx), answer, reason_dir)
+
+    generated_tokens = count_tokens(answer, tokenizer)
+    gt_sol = str(example.get("ground_truth", "")).strip()
+    is_correct, extracted_answer, message = evaluate_spatialmap_answer(
+        answer, options, gt_sol, think_tags['close']
+    )
+    attempted = (extracted_answer is not None and extracted_answer.strip().lower() != "no solution")
+
+    if monitor is not None:
+        num_relations = len(monitor.z3_solver.parsed_relations)
+        verified_claims = len(monitor.verified_claims)
+
+    return {
+        "idx": int(idx),
+        "question_type": question_type,
+        "sol": extracted_answer,
+        "gt": gt_sol,
+        "is_correct": bool(is_correct),
+        "attempted": bool(attempted),
+        "generated_tokens": int(generated_tokens),
+        "num_relations": int(num_relations),
+        "verified_claims": int(verified_claims),
+        "message": message,
+        "output_text": answer,
     }
-    
-    summary_path = os.path.join(output_dirs["base"], "summary.json")
-    with open(summary_path, 'w') as f:
-        json.dump(summary, f, indent=2)
-    logger.info(f"\nSaved summary to {summary_path}")
-    
-    # Save results summary to a text file
-    results_file = os.path.join(output_dirs["base"], f"EAT_{total_examples}examples_results.txt")
-    with open(results_file, 'w') as f:
-        f.write(f"SpatialMap Step Verification Results\n")
-        f.write(f"{'='*50}\n\n")
-        f.write(f"Model: {args.model}\n")
-        f.write(f"Number of Examples: {total_examples}\n")
-        f.write(f"Max Corrections: {args.max_corrections}\n")
-        f.write(f"Newline Threshold: {args.newline_threshold}\n")
-        f.write(f"Warmup: {args.warmup}\n")
-        f.write(f"\n")
-        f.write(f"Results:\n")
-        f.write(f"---------\n")
-        f.write(f"Correct: {total_correct}/{total_examples}\n")
-        f.write(f"Accuracy: {accuracy:.2%}\n")
-        f.write(f"Attempted (produced \\boxed answer): {num_attempted}/{total_examples}\n")
-        f.write(f"Soundness (correct/attempted): {soundness:.2%}\n\n")
-        f.write(f"Per-type Breakdown:\n")
-        f.write(f"---------------------------\n")
-        for qtype, stats in stats_by_type.items():
-            if stats["total"] > 0:
-                acc = stats["correct"] / stats["total"]
-                f.write(f"  {qtype}: {acc:.2%} ({stats['correct']}/{stats['total']})\n")
-        f.write(f"\nToken Statistics:\n")
-        f.write(f"---------------------------\n")
-        f.write(f"Total Tokens: {total_reasoning_tokens}\n")
-        f.write(f"Average Tokens: {avg_reasoning_tokens:.2f}\n")
-        if reasoning_token_counts:
-            f.write(f"Median Tokens: {float(np.median(reasoning_token_counts)):.0f}\n")
-            f.write(f"Min Tokens: {min(reasoning_token_counts)}\n")
-            f.write(f"Max Tokens: {max(reasoning_token_counts)}\n")
-            f.write(f"Std Dev: {np.std(reasoning_token_counts):.2f}\n")
-    
-    logger.info(f"Results saved to {results_file}")
-    print(f"Results saved to {results_file}")
+
+
+if __name__ == "__main__":
+
+    parser = argparse.ArgumentParser(description="SpatialMap step-by-step solver with monitors")
+    parser.add_argument("--num_examples", "-n", type=int, default=1500, help="Number of examples to run")
+    parser.add_argument("--debug", "-d", action="store_true", help="Enable debug logs and single-process mode")
+    parser.add_argument("--newline_threshold", type=int, default=20, help="Number of newlines in thinking before forcing step verification")
+    parser.add_argument("--max_corrections", type=int, default=5, help="Maximum number of correction attempts per example")
+    parser.add_argument("--warmup", type=int, default=0, help="Number of \\n to skip before starting side-chain verification")
+    parser.add_argument("--model", type=str, default=MAIN_MODEL, help="Main model to use for generation")
+    parser.add_argument("--port", type=int, default=8000, help="vLLM server port")
+    parser.add_argument("--monitor", "-m", action="store_true", help="Enable thinking-phase step verification monitor (default: vanilla CoT)")
+    parser.add_argument("--n_processes", "-p", type=int, default=16, help="Number of parallel worker processes")
+    parser.add_argument("--n_exps", type=int, default=1, help="Number of independent sampling runs (produces outputs_solver_{i}.jsonl)")
+    parser.add_argument("--extra", type=str, default="", help="Extra text description for the output directory")
+    args = parser.parse_args()
+
+    main_model = args.model
+    N = args.num_examples
+
+    # ---- Unique, timestamped run directory ----
+    model_short = get_model_short_name(main_model)
+    mode = "monitor" if args.monitor else "solveronly"
+    run_name = f"{model_short}_{mode}"
+    if args.monitor:
+        run_name += f"_maxcorr{args.max_corrections}_nl{args.newline_threshold}"
+    run_name += f"_nexps{args.n_exps}"
+    if args.debug:
+        run_name += "_debug"
+
+    output_dir = os.path.join(
+        _OUTPUT_ROOT, "Outputs_TTS", "SpatialMapResults",
+        f'{datetime.now().strftime("%Y%m%d_%H%M%S")}-{run_name}',
+    )
+    if args.extra:
+        output_dir += f"-{args.extra}"
+    reason_dir = os.path.join(output_dir, "Reasoning_output")
+    os.makedirs(reason_dir, exist_ok=True)
+
+    logfile = os.path.join(output_dir, "run.log")
+
+    log_level = logging.DEBUG if args.debug else logging.INFO
+    logging.basicConfig(
+        level=log_level,
+        format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
+        handlers=[logging.FileHandler(logfile, mode="w")],
+        force=True,
+    )
+
+    with open(os.path.join(output_dir, "args.json"), "w") as f:
+        json.dump(vars(args), f, indent=4)
+
+    logger.info(f"Main model: {main_model}")
+    logger.info(f"Output directory: {output_dir}")
+    logger.info(f"Monitor: {args.monitor} | Examples: {N} | Processes: {args.n_processes}")
+
+    dataset = load_dataset("microsoft/VISION_LANGUAGE", "spatial_map_text_only", split="val")
+
+    tokenizer = AutoTokenizer.from_pretrained(main_model, trust_remote_code=True)
+
+    # Dataset has 1500 examples; 1499 is the last valid index
+    indices = np.linspace(0, len(dataset) - 1, N, dtype=int)
+
+    for exp_i in range(args.n_exps):
+        if args.n_exps > 1:
+            print(f"\n=== Run {exp_i + 1}/{args.n_exps} ===")
+
+        reason_dir = os.path.join(output_dir, "Reasoning_output", f"solver_{exp_i}")
+        os.makedirs(reason_dir, exist_ok=True)
+        outputs_file = os.path.join(output_dir, f"outputs_solver_{exp_i}.jsonl")
+        results_file = os.path.join(output_dir, f"results_solver_{exp_i}.txt")
+
+        tasks = [(args, int(idx)) for idx in indices]
+
+        if args.debug:
+            results = [run_one(t) for t in tqdm(tasks, desc="SpatialMap")]
+        else:
+            with Pool(processes=args.n_processes) as pool:
+                results = list(tqdm(
+                    pool.imap_unordered(run_one, tasks),
+                    total=len(tasks),
+                    desc="SpatialMap",
+                ))
+
+        results = [r for r in results if r is not None]
+
+        with open(outputs_file, "w") as f:
+            for r in results:
+                f.write(json.dumps(r) + "\n")
+
+        num_correct = sum(r["is_correct"] for r in results)
+        num_attempted = sum(r["attempted"] for r in results)
+        num_excluded = len(results) - num_attempted
+        generated_token_counts = [r["generated_tokens"] for r in results]
+        total_generated_tokens = sum(generated_token_counts)
+
+        avg_generated_tokens = total_generated_tokens / N if N > 0 else 0
+        accuracy = num_correct / N if N > 0 else 0
+        soundness = num_correct / num_attempted if num_attempted > 0 else 0
+
+        # Per-type breakdown
+        stats_by_type = {}
+        for r in results:
+            qt = r["question_type"]
+            s = stats_by_type.setdefault(qt, {"total": 0, "correct": 0})
+            s["total"] += 1
+            s["correct"] += int(r["is_correct"])
+
+        with open(results_file, "w") as f:
+            f.write("SpatialMap Evaluation Results\n")
+            f.write(f"{'='*50}\n\n")
+            f.write(f"Model: {main_model}\n")
+            f.write(f"Number of Examples: {N}\n\n")
+            f.write("Results:\n")
+            f.write("---------\n")
+            f.write(f"Correct: {num_correct}/{N}\n")
+            f.write(f"Accuracy: {accuracy:.2%}\n")
+            f.write(f"Soundness: {num_correct}/{num_attempted} = {soundness:.2%}\n")
+            f.write(f"Excluded from soundness (no answer): {num_excluded}\n\n")
+            f.write("Per-type Breakdown:\n")
+            f.write("---------------------------\n")
+            for qtype, stats in stats_by_type.items():
+                if stats["total"] > 0:
+                    acc = stats["correct"] / stats["total"]
+                    f.write(f"  {qtype}: {acc:.2%} ({stats['correct']}/{stats['total']})\n")
+            f.write("\nGenerated Token Statistics:\n")
+            f.write("---------------------------\n")
+            f.write(f"Total Generated Tokens: {total_generated_tokens}\n")
+            f.write(f"Average Generated Tokens: {avg_generated_tokens:.2f}\n")
+            if generated_token_counts:
+                f.write(f"Min Generated Tokens: {min(generated_token_counts)}\n")
+                f.write(f"Max Generated Tokens: {max(generated_token_counts)}\n")
+                f.write(f"Std Dev: {np.std(generated_token_counts):.2f}\n")
+
+        logger.info(
+            f"Run {exp_i}: Accuracy={accuracy:.2%} Soundness={soundness:.2%} "
+            f"Results saved to {results_file}"
+        )

@@ -200,7 +200,7 @@ class KstableAnswerMCQMonitor(VerifyMonitor):
         
         if not event.is_set():
             event_info["generated_text"] = step
-            event_info["feedback"] = "</think>"  # Sliced text up to k-stable point
+            event_info["feedback"] = self.answer_start_token  # Sliced text up to k-stable point
             event_info["correction_index"] = correction_index
             event.set()
     
@@ -441,7 +441,7 @@ class KstableAnswerGame24Monitor(VerifyMonitor):
         
         if not event.is_set():
             event_info["generated_text"] = chunk
-            event_info["feedback"] = "</think>"
+            event_info["feedback"] = self.answer_start_token
             event_info["correction_index"] = correction_index
             event.set()
     

@@ -8,13 +8,17 @@ All early stopping monitors are used via `stream_completion`:
 from interwhen import stream_completion
 from interwhen.monitors import EATMonitor, DEERMonitor, KstableAnswerMCQMonitor, KstableAnswerGame24Monitor
 
+tokenizer = AutoTokenizer.from_pretrained("Qwen/Qwen3-30B-A3B-Thinking-2507")
+llm_server = init_llm_server("Qwen/Qwen3-30B-A3B-Thinking-2507", context_length=32768, port=8000)
+
 answer = await stream_completion(
     prompt,
     llm_server=llm_server,
     monitors=(your_monitor,),
     add_delay=False,
     termination_requires_validation=False,
-    async_execution=True
+    async_execution=True,
+    tokenizer=tokenizer
 )
 ```
 

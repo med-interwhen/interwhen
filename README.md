@@ -140,7 +140,8 @@ python -m vllm.entrypoints.openai.api_server \
 
 **Generate answer enabled with given monitors**
 ```python
-llm_server = init_llm_server("Qwen/Qwen3-30B-A3B-Thinking-2507", max_tokens=32768, port=8000)
+tokenizer = AutoTokenizer.from_pretrained("Qwen/Qwen3-30B-A3B-Thinking-2507")
+llm_server = init_llm_server("Qwen/Qwen3-30B-A3B-Thinking-2507", context_length=32768, port=8000)
 stream_completion(
     prompt,
     llm_server=llm_server,
@@ -149,7 +150,8 @@ stream_completion(
                   max_corrections=5,
                   name="maze_step_verifier"),
     ),
-    async_execution=True
+    async_execution=True,
+    tokenizer=tokenizer
 )
 ```
 The above example is for the Maze dataset, where a maze is given and questions are asked with respect to the maze, such as how many right turns are present in the path from given starting and ending positions. The above code implements a simple monitor that watches the model's output stream and verifies if the step proposed by the model is valid or not. You can run the full example using the following command:

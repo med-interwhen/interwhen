@@ -46,7 +46,7 @@ class EATMonitor(VerifyMonitor):
         """
         
         # We append this tail so that we can compute entropy for next token (answer)
-        partial_answer = (generated_text + "\n\n</think>" + "\n\n" + 'Final answer is \\boxed{')
+        partial_answer = (generated_text + "\n\n" + self.answer_start_token + "\n\n" + 'Final answer is \\boxed{')
         entropy_2 = compute_entropy(
             self.hf_model,
             self.tokenizer,
@@ -92,9 +92,9 @@ class EATMonitor(VerifyMonitor):
 
     async def fix(self, generated_text, event_info, fix_method=None):
         """
-        Appending the </think> to force the thinking process to conclude.
+        Appending the answer_start_token to force the thinking process to conclude.
         """
-        fixed_text = generated_text[:event_info['correction_index']] + "\n\n</think>"
+        fixed_text = generated_text[:event_info['correction_index']] + "\n\n" + self.answer_start_token
         print("VISHAAAAAAAAAAAAAAAK"*100)
         return fixed_text
     
@@ -136,7 +136,7 @@ class DEERMonitor(VerifyMonitor):
         """
         
         # We apppend this tail so that we can compute confidence for the answer
-        partial_answer = (generated_text + "\n\n</think>" + "\n\n" + 'Final answer is \\boxed{')
+        partial_answer = (generated_text + "\n\n" + self.answer_start_token + "\n\n" + 'Final answer is \\boxed{')
         self.llm_server["payload"]["prompt"] = partial_answer
         confidence = stream_and_compute_geom_mean(self.llm_server)
         self.confidence.append(confidence)
@@ -165,10 +165,10 @@ class DEERMonitor(VerifyMonitor):
 
     async def fix(self, generated_text, event_info, fix_method=None):
         """
-        Appending </think> to force the thinking process to conclude.
+        Appending answer_start_token to force the thinking process to conclude.
         """
         # Append answer prompt to conclude
-        fixed_text = generated_text[:event_info['correction_index']] + "\n\n</think>"
+        fixed_text = generated_text[:event_info['correction_index']] + "\n\n" + self.answer_start_token
         return fixed_text 
 
     def step_extractor(self, chunk, generated_text):

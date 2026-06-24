@@ -17,6 +17,7 @@ from transformers import AutoTokenizer
 
 from interwhen import stream_completion
 from interwhen.monitors import StepVerifierSpatialMapMonitor
+from interwhen.utils.llm import init_llm_server, get_think_tags
 
 logging.basicConfig(level=logging.INFO, format='%(message)s')
 logger = logging.getLogger(__name__)
@@ -258,10 +259,10 @@ Now solve the following spatial reasoning problem using the EXACT same format.""
     return pre_prompt, description
 
 
-def extract_solution(text: str) -> str:
-    """Extract the boxed answer from the response (after </think>)."""
-    if "</think>" in text:
-        answer_section = text.split("</think>")[-1]
+def extract_solution(text: str, close_think: str = "</think>") -> str:
+    """Extract the boxed answer from the response (after the think-close tag)."""
+    if close_think in text:
+        answer_section = text.split(close_think)[-1]
     else:
         answer_section = text
     
@@ -282,27 +283,7 @@ def count_tokens(text: str, tokenizer) -> int:
     return len(tokens)
 
 
-def init_llm_server(model_name, max_tokens=32768, port=8000):
-    """Initialize LLM server configuration."""
-    url = f"http://localhost:{port}/v1/completions"
-    payload = {
-        "model": model_name,
-        "max_tokens": max_tokens,
-        "top_k": 20,
-        "top_p": 0.95,
-        "min_p": 0.0,
-        "do_sample": True,
-        "temperature": 0.6,
-        "stream": True,
-        "logprobs": 20,
-        "use_beam_search": False,
-        "prompt_cache": True,
-        "seed": 42
-    }
-    headers = {"Content-Type": "application/json"}
-    return {"url": url, "payload": payload, "headers": headers}
-
-def evaluate_spatialmap_answer(answer, options, ground_truth):
+def evaluate_spatialmap_answer(answer, options, ground_truth, close_think="</think>"):
     """
     Evaluate a SpatialMap MCQ answer and return (is_correct, extracted_answer, message).
     
@@ -314,7 +295,7 @@ def evaluate_spatialmap_answer(answer, options, ground_truth):
     Returns:
         Tuple of (is_correct, extracted_answer, message)
     """
-    sol = extract_solution(answer)
+    sol = extract_solution(answer, close_think)
     gt_sol = str(ground_truth).strip()
     
     if not sol:
@@ -369,6 +350,7 @@ if __name__ == "__main__":
     
     # Setup LLM server
     llm_server = init_llm_server(args.model, port=args.port)
+    think_tags = get_think_tags(args.model)
     
     # Load tokenizer for accurate token counting
     logger.info(f"Loading tokenizer for {args.model}...")
@@ -418,8 +400,13 @@ if __name__ == "__main__":
         # Determine question type
         question_type = get_question_type(idx)
         
-        # Build full prompt with ChatML format
-        full_prompt = f"<|im_start|>system\n{system_prompt}<|im_end|>\n<|im_start|>user\n{user_prompt}<|im_end|>\n<|im_start|>assistant\n"
+        # Build full prompt using the model's chat template
+        full_prompt = tokenizer.apply_chat_template(
+            [{"role": "system", "content": system_prompt}, {"role": "user", "content": user_prompt}],
+            tokenize=False,
+            add_generation_prompt=True,
+            enable_thinking=True,
+        )
         
         logger.info(f"\n{'='*60}")
         logger.info(f"Example {idx} ({question_type})")
@@ -429,7 +416,8 @@ if __name__ == "__main__":
         monitor = StepVerifierSpatialMapMonitor.from_prompt(
             problem_text=user_prompt,
             max_corrections=args.max_corrections,
-            name="spatialmap_step_verifier"
+            name="spatialmap_step_verifier",
+            answer_start_token=think_tags['close'],
         )
         
         logger.info(f"Z3 solver initialized with {len(monitor.z3_solver.parsed_relations)} relations")
@@ -442,7 +430,8 @@ if __name__ == "__main__":
                 monitors=(monitor,),
                 add_delay=False,
                 termination_requires_validation=False,
-                async_execution=True
+                async_execution=True,
+                tokenizer=tokenizer
             ))
         except Exception as e:
             logger.error(f"Error running example {idx}: {e}")
@@ -456,7 +445,7 @@ if __name__ == "__main__":
         
         # Evaluate the answer
         gt_sol = str(example.get("ground_truth", "")).strip()
-        is_correct, extracted_answer, message = evaluate_spatialmap_answer(answer, options, gt_sol)
+        is_correct, extracted_answer, message = evaluate_spatialmap_answer(answer, options, gt_sol, think_tags['close'])
         
         if extracted_answer:
             logger.info(f"Extracted answer: {extracted_answer}")
