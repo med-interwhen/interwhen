@@ -1,3 +1,11 @@
+"""VitaBench overlay file — modified from the original VitaBench repo
+(https://github.com/meituan-longcat/vitabench), at src/vita/cli.py.
+Everything is verbatim from the original except for the following changes:
+
+1. Added four ``run`` CLI arguments: ``--soundness-mode``, ``--completeness-mode``,
+   ``--solo-user-mode`` and ``--solo-user-file``.
+2. Forwarded those four arguments into ``run_domain`` from ``main()``.
+"""
 import argparse
 from typing import get_args
 
@@ -175,7 +183,33 @@ def add_run_args(parser):
         action="store_true",
         help="Re-run tasks specified by --task-ids. If used with --re-evaluate-file, will re-run specified tasks and then re-evaluate all tasks together.",
     )
-    
+    parser.add_argument(
+        "--soundness-mode",
+        type=str,
+        choices=["llm", "harness", "off"],
+        default="off",
+        help="Soundness check mode: 'llm' (LLM judge), 'harness' (NL constraint harness), 'off' (disabled). Default is 'off'.",
+    )
+    parser.add_argument(
+        "--completeness-mode",
+        type=str,
+        choices=["on", "off"],
+        default="off",
+        help="Completeness check mode: 'on' (check final order completeness at stop), 'off' (disabled). Default is 'off'.",
+    )
+    parser.add_argument(
+        "--solo-user-mode",
+        type=str,
+        choices=["live", "file"],
+        default="live",
+        help="Solo agent user message mode: 'live' (generate via LLM each run, introduces variance) or 'file' (load from --solo-user-file, errors if a task is missing). Default is 'live'.",
+    )
+    parser.add_argument(
+        "--solo-user-file",
+        type=str,
+        default=None,
+        help="Path to a JSON file mapping task_id -> pregenerated user message. Required when --solo-user-mode=file.",
+    )
 
 
 def main():
@@ -212,7 +246,11 @@ def main():
                 csv_output_file=getattr(args, 'csv_output', None),
                 enable_think=args.enable_think,
                 language=args.language,
-                re_run=getattr(args, 're_run', False)
+                re_run=getattr(args, 're_run', False),
+                soundness_mode=args.soundness_mode,
+                completeness_mode=args.completeness_mode,
+                solo_user_mode=args.solo_user_mode,
+                solo_user_file=args.solo_user_file,
             )
         )
     )

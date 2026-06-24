@@ -1,3 +1,10 @@
+"""VitaBench overlay file — modified from the original VitaBench repo
+(https://github.com/meituan-longcat/vitabench), at src/vita/evaluator/evaluator_traj.py.
+Everything is verbatim from the original except for the following change:
+
+1. In ``TrajectoryEvaluator``, flatten ``result_data`` when the LLM response is
+   parsed as a nested list before iterating over rubric results.
+"""
 import json
 import copy
 from typing import List
@@ -238,6 +245,9 @@ class TrajectoryEvaluator(EvaluatorBase):
         result_data = evaluator_extracter(assistant_message.content)
 
         if result_data:
+            # # Flatten in case the LLM response was parsed as a nested list
+            if isinstance(result_data, list) and result_data and isinstance(result_data[0], list):
+                result_data = [item for sublist in result_data for item in sublist]
             for result in result_data:
                 rubric_idx = result.get("rubric_idx")
                 if rubric_idx and rubric_idx in updated_states:

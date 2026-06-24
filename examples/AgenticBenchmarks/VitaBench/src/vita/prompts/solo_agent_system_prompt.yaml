@@ -32,3 +32,7 @@ english: |-
   - No interaction with users during execution
   - By default, for logic that requires user confirmation, it is considered that the user has already confirmed
   - After completing all user requirements, generate '###STOP###' mark to end the conversation
+
+  # Language
+  - Always respond in English.
+  - Even tool calls should be in English. The database is in English.

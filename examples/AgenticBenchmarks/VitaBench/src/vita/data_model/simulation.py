@@ -1,3 +1,13 @@
+"""VitaBench overlay file — modified from the original VitaBench repo
+(https://github.com/meituan-longcat/vitabench), at src/vita/data_model/simulation.py.
+Everything is verbatim from the original except for the following changes:
+
+1. Added four fields to ``RunConfig``: ``soundness_mode``, ``completeness_mode``,
+   ``solo_user_mode`` and ``solo_user_file``.
+2. Added validation in ``RunConfig.validate()`` for ``solo_user_mode`` /
+   ``solo_user_file``.
+3. Added the ``soundness_log`` field to ``SimulationRun``.
+"""
 import json
 from copy import deepcopy
 from enum import Enum
@@ -220,6 +230,34 @@ class RunConfig(BaseModel):
             default=False,
         ),
     ]
+    soundness_mode: Annotated[
+        str,
+        Field(
+            description="Soundness check mode: 'llm', 'harness', or 'off'",
+            default="off",
+        ),
+    ]
+    completeness_mode: Annotated[
+        str,
+        Field(
+            description="Completeness check mode: 'on' or 'off'",
+            default="off",
+        ),
+    ]
+    solo_user_mode: Annotated[
+        str,
+        Field(
+            description="Solo agent user message mode: 'live' (generate via LLM each run) or 'file' (load from solo_user_file, error if missing)",
+            default="live",
+        ),
+    ]
+    solo_user_file: Annotated[
+        Optional[str],
+        Field(
+            description="Path to a JSON file mapping task_id -> pregenerated user message. Required when solo_user_mode='file'.",
+            default=None,
+        ),
+    ]
 
     def validate(self) -> None:
         """
@@ -231,6 +269,11 @@ class RunConfig(BaseModel):
                 raise ValueError("--re-run can only be used with --re-evaluate-file")
             if not self.task_ids:
                 raise ValueError("--re-run requires --task-ids to specify which tasks to re-run")
+        # Validate solo user mode
+        if self.solo_user_mode not in ("live", "file"):
+            raise ValueError("--solo-user-mode must be 'live' or 'file'")
+        if self.solo_user_mode == "file" and not self.solo_user_file:
+            raise ValueError("--solo-user-file must be provided when --solo-user-mode=file")
 
 
 class NLRubricCheck(BaseModel):
@@ -353,6 +396,9 @@ class SimulationRun(BaseModel):
     trial: Optional[int] = Field(description="Trial number", default=None)
     seed: Optional[int] = Field(
         description="Seed used for the simulation.", default=None
+    )
+    soundness_log: Optional[list] = Field(
+        description="Log of all LLM soundness judge calls (tool name, args, reason).", default=None
     )
     
 

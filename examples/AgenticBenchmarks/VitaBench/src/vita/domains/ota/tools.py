@@ -1,4 +1,13 @@
-"""Toolkit for the OTA domain."""
+"""Toolkit for the OTA domain.
+
+VitaBench overlay file — modified from the original VitaBench repo
+(https://github.com/meituan-longcat/vitabench), at src/vita/domains/ota/tools.py.
+Everything is verbatim from the original except for the following change:
+
+1. Added an optional ``override: bool = False`` parameter to every WRITE tool
+   (create/modify/cancel hotel, attraction, flight and train orders) so the
+   agent can bypass a soundness block when it is confident its action is correct.
+"""
 
 from typing import List, Optional, Union
 
@@ -335,7 +344,7 @@ class OTATools(ToolKitBase):
         return trains_repr
 
     @is_tool(tool_type=ToolType.WRITE)
-    def create_hotel_order(self, hotel_id: str, room_id: str, user_id: str) -> str:
+    def create_hotel_order(self, hotel_id: str, room_id: str, user_id: str, override: bool = False) -> str:
         assert hotel_id, "Hotel ID cannot be empty"
         assert room_id, "Room ID cannot be empty"
         assert user_id, "User ID cannot be empty"
@@ -386,7 +395,7 @@ class OTATools(ToolKitBase):
             return f"Failed to create order: {response}"
 
     @is_tool(tool_type=ToolType.WRITE)
-    def create_attraction_order(self, attraction_id: str, ticket_id: str, user_id: str, date: str, quantity: int) -> str:
+    def create_attraction_order(self, attraction_id: str, ticket_id: str, user_id: str, date: str, quantity: int, override: bool = False) -> str:
         assert attraction_id, "Attraction ID cannot be empty"
         assert ticket_id, "Ticket ID cannot be empty"
         assert user_id, "User ID cannot be empty"
@@ -443,7 +452,7 @@ class OTATools(ToolKitBase):
             return f"Failed to create order: {response}"
 
     @is_tool(tool_type=ToolType.WRITE)
-    def create_flight_order(self, flight_id: str, seat_id: str, user_id: str, date: str, quantity: int) -> str:
+    def create_flight_order(self, flight_id: str, seat_id: str, user_id: str, date: str, quantity: int, override: bool = False) -> str:
         assert flight_id, "Flight ID cannot be empty"
         assert seat_id, "Seat ID cannot be empty"
         assert user_id, "User ID cannot be empty"
@@ -500,7 +509,7 @@ class OTATools(ToolKitBase):
             return f"Failed to create order: {response}"
 
     @is_tool(tool_type=ToolType.WRITE)
-    def create_train_order(self, train_id: str, seat_id: str, user_id: str, date: str, quantity: int) -> str:
+    def create_train_order(self, train_id: str, seat_id: str, user_id: str, date: str, quantity: int, override: bool = False) -> str:
         assert train_id, "Train ID cannot be empty"
         assert seat_id, "Seat ID cannot be empty"
         assert user_id, "User ID cannot be empty"
@@ -869,7 +878,7 @@ class OTATools(ToolKitBase):
         return repr(order)
 
     @is_tool(tool_type=ToolType.WRITE)
-    def modify_train_order(self, order_id: str, user_id: str, new_date: str) -> str:
+    def modify_train_order(self, order_id: str, user_id: str, new_date: str, override: bool = False) -> str:
         assert order_id, "Order ID cannot be empty"
         assert user_id, "User ID cannot be empty"
         assert new_date, "New departure date cannot be empty"
@@ -951,7 +960,7 @@ class OTATools(ToolKitBase):
             return f"Modification failed: {response}"
 
     @is_tool(tool_type=ToolType.WRITE)
-    def modify_flight_order(self, order_id: str, user_id: str, new_date: str) -> str:
+    def modify_flight_order(self, order_id: str, user_id: str, new_date: str, override: bool = False) -> str:
         assert order_id, "Order ID cannot be empty"
         assert user_id, "User ID cannot be empty"
         assert new_date, "New departure date cannot be empty"
@@ -1033,7 +1042,7 @@ class OTATools(ToolKitBase):
             return f"Modification failed: {response}"
 
     @is_tool(tool_type=ToolType.WRITE)
-    def cancel_hotel_order(self, order_id: str, user_id: str) -> str:
+    def cancel_hotel_order(self, order_id: str, user_id: str, override: bool = False) -> str:
         assert order_id, "Order ID cannot be empty"
         assert user_id, "User ID cannot be empty"
         assert self._check_user(user_id), "User ID does not match"
@@ -1065,7 +1074,7 @@ class OTATools(ToolKitBase):
             return f"Cancellation failed: {response}"
 
     @is_tool(tool_type=ToolType.WRITE)
-    def cancel_attraction_order(self, order_id: str, user_id: str) -> str:
+    def cancel_attraction_order(self, order_id: str, user_id: str, override: bool = False) -> str:
         assert order_id, "Order ID cannot be empty"
         assert user_id, "User ID cannot be empty"
         assert self._check_user(user_id), "User ID does not match"
@@ -1097,7 +1106,7 @@ class OTATools(ToolKitBase):
             return f"Cancellation failed: {response}"
 
     @is_tool(tool_type=ToolType.WRITE)
-    def cancel_flight_order(self, order_id: str, user_id: str) -> str:
+    def cancel_flight_order(self, order_id: str, user_id: str, override: bool = False) -> str:
         assert order_id, "Order ID cannot be empty"
         assert user_id, "User ID cannot be empty"
         assert self._check_user(user_id), "User ID does not match"
@@ -1129,7 +1138,7 @@ class OTATools(ToolKitBase):
             return f"Cancellation failed: {response}"
 
     @is_tool(tool_type=ToolType.WRITE)
-    def cancel_train_order(self, order_id: str, user_id: str) -> str:
+    def cancel_train_order(self, order_id: str, user_id: str, override: bool = False) -> str:
         assert order_id, "Order ID cannot be empty"
         assert user_id, "User ID cannot be empty"
         assert self._check_user(user_id), "User ID does not match"

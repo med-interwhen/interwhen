@@ -1,4 +1,22 @@
+"""VitaBench overlay file — modified from the original VitaBench repo
+(https://github.com/meituan-longcat/vitabench), at src/vita/run.py.
+Everything is verbatim from the original except for the following changes:
+
+1. Use full tracebacks in retry/error logs.
+2. In solo mode, build the user via ``DummyUser.build(...)`` (resolving
+   pregenerated messages) instead of the registry constructor.
+3. Added the ``_build_csv_path`` helper (timestamp + model name when the CSV
+   output is a directory).
+4. Threaded ``soundness_mode``, ``completeness_mode``, ``solo_user_mode`` and
+   ``solo_user_file`` / ``solo_user_messages`` through ``run_domain`` →
+   ``run_tasks`` → ``run_task`` → ``_run_task_internal``.
+5. Load the pregenerated solo user messages from ``solo_user_file`` once per run.
+6. Build the OTA verifier via ``create_verifier`` and pass it to the
+   ``Orchestrator``.
+7. Append soundness/completeness suffixes to the run name in ``make_run_name``.
+"""
 import json
+import traceback
 import multiprocessing
 import random
 import threading
@@ -26,11 +44,22 @@ from vita.evaluator.evaluator import evaluate_simulation
 from vita.metrics.agent_metrics import compute_metrics
 from vita.orchestrator.orchestrator import Orchestrator
 from vita.registry import RegistryInfo, registry
-from vita.user.user_simulator import get_global_user_sim_guidelines
+from vita.user.user_simulator import get_global_user_sim_guidelines, DummyUser
 from vita.utils.display import ConsoleDisplay
 from vita.utils.pydantic_utils import get_pydantic_hash
 from vita.utils.utils import DATA_DIR, get_commit_hash, get_now, show_dict_diff, global_time
 from vita.utils.csv_utils import save_results_to_csv
+
+
+def _build_csv_path(csv_output: str, model_name: str) -> str:
+    """Build CSV path with timestamp and model name if csv_output is a directory."""
+    path = Path(csv_output)
+    if path.suffix != ".csv":
+        # Treat as directory: generate filename with timestamp and model name
+        safe_model = model_name.replace("/", "_")
+        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+        path = path / f"{timestamp}_{safe_model}.csv"
+    return str(path)
 
 
 def get_options() -> RegistryInfo:
@@ -101,8 +130,10 @@ def make_run_name(config: RunConfig) -> str:
 
     # Add think mode indicator to the filename if enable_think is True
     think_suffix = "_think" if config.enable_think else ""
-    
-    return f"{get_now()}_{config.domain}_{agent_name}_{user_name}{think_suffix}"
+    soundness_suffix = f"_sc-{config.soundness_mode}" if config.soundness_mode != "off" else ""
+    completeness_suffix = "_cc-on" if config.completeness_mode == "on" else ""
+
+    return f"{get_now()}_{config.domain}_{agent_name}_{user_name}{think_suffix}{soundness_suffix}{completeness_suffix}"
 
 
 def run_domain(config: RunConfig) -> Results:
@@ -155,6 +186,10 @@ def run_domain(config: RunConfig) -> Results:
         llm_evaluator=config.llm_evaluator,
         llm_args_evaluator=config.llm_args_evaluator,
         language=config.language,
+        soundness_mode=config.soundness_mode,
+        completeness_mode=config.completeness_mode,
+        solo_user_mode=config.solo_user_mode,
+        solo_user_file=config.solo_user_file,
     )
     
     metrics = compute_metrics(simulation_results)
@@ -162,7 +197,7 @@ def run_domain(config: RunConfig) -> Results:
 
     if config.csv_output_file and simulation_results.simulations:
         try:
-            csv_output = config.csv_output_file
+            csv_output = _build_csv_path(config.csv_output_file, config.llm_agent)
             save_results_to_csv(simulation_results, csv_output, config, metrics)
             ConsoleDisplay.console.print(f"\n💾 [bold green]Results appended to CSV: {csv_output}[/bold green]")
         except Exception as e:
@@ -193,6 +228,11 @@ def run_tasks(
     llm_evaluator: Optional[str] = None,
     llm_args_evaluator: Optional[dict] = None,
     language: str = None,
+
+    soundness_mode: str = "off",
+    completeness_mode: str = "on",
+    solo_user_mode: str = "live",
+    solo_user_file: Optional[str] = None,
 ) -> Results:
     """
     Runs tasks for a given domain.
@@ -233,6 +273,15 @@ def run_tasks(
         raise ValueError("Max steps must be greater than 0")
     if max_errors <= 0:
         raise ValueError("Max errors must be greater than 0")
+
+    # Load the pregenerated solo user messages once for the entire run
+    solo_user_messages: Optional[dict] = None
+    if solo_user_mode == "file":
+        if not solo_user_file:
+            raise ValueError("solo_user_mode='file' requires solo_user_file to be set")
+        with open(solo_user_file, "r", encoding="utf-8") as _fp:
+            solo_user_messages = json.load(_fp)
+        logger.info(f"Loaded {len(solo_user_messages)} pregenerated solo user messages from {solo_user_file}")
 
     random.seed(seed)
 
@@ -378,6 +427,10 @@ def run_tasks(
                 llm_evaluator=llm_evaluator,
                 llm_args_evaluator=llm_args_evaluator,
                 language=language,
+                soundness_mode=soundness_mode,
+                completeness_mode=completeness_mode,
+                solo_user_mode=solo_user_mode,
+                solo_user_messages=solo_user_messages,
             )
             simulation.trial = trial
             if console_display:
@@ -456,6 +509,10 @@ def run_task(
     llm_evaluator: Optional[str] = None,
     llm_args_evaluator: Optional[dict] = None,
     language: str = None,
+    soundness_mode: str = "off",
+    completeness_mode: str = "off",
+    solo_user_mode: str = "live",
+    solo_user_messages: Optional[dict] = None,
 ) -> SimulationRun:
     """
     Runs tasks for a given domain.
@@ -502,16 +559,20 @@ def run_task(
                 enable_think=enable_think,
                 llm_evaluator=llm_evaluator,
                 llm_args_evaluator=llm_args_evaluator,
-                language=language
+                language=language,
+                soundness_mode=soundness_mode,
+                completeness_mode=completeness_mode,
+                solo_user_mode=solo_user_mode,
+                solo_user_messages=solo_user_messages,
             )
         except Exception as e:
             if attempt < max_retries:
-                logger.warning(f"Task {task.id} failed on attempt {attempt + 1}/{max_retries + 1}: {e}. Retrying...")
+                logger.warning(f"Task {task.id} failed on attempt {attempt + 1}/{max_retries + 1}: {traceback.format_exc()}. Retrying...")
                 # Clear global state, prepare for retry
                 _clear_global_state()
                 continue
             else:
-                logger.error(f"Task {task.id} failed after {max_retries + 1} attempts. Last error: {e}")
+                logger.error(f"Task {task.id} failed after {max_retries + 1} attempts. Last error:\n{traceback.format_exc()}")
                 raise e
 
 
@@ -532,6 +593,10 @@ def _run_task_internal(
     llm_evaluator: Optional[str] = None,
     llm_args_evaluator: Optional[dict] = None,
     language: str = None,
+    soundness_mode: str = "off",
+    completeness_mode: str = "off",
+    solo_user_mode: str = "live",
+    solo_user_messages: Optional[dict] = None,
 ) -> SimulationRun:
     """
     Internal implementation of run_task without retry logic.
@@ -581,15 +646,32 @@ def _run_task_internal(
             f"Unknown agent type: {AgentConstructor}. Should be LLMAgent or LLMSoloAgent"
         )
 
-    UserConstructor = registry.get_user_constructor(user)
+    if solo_mode:
+        user = DummyUser.build(
+            task_id=task.id,
+            instructions=str(task.instructions),
+            persona=str(task.user_scenario.user_profile),
+            llm=llm_user,
+            llm_args=llm_args_user,
+            language=language,
+            solo_user_mode=solo_user_mode,
+            solo_user_messages=solo_user_messages,
+        )
+    else:
+        UserConstructor = registry.get_user_constructor(user)
+        user = UserConstructor(
+            persona=str(task.user_scenario.user_profile),
+            instructions=str(task.instructions),
+            llm=llm_user,
+            llm_args=llm_args_user,
+            language=language,
+        )
 
-    user = UserConstructor(
-        persona=str(task.user_scenario.user_profile),
-        instructions=str(task.instructions),
-        llm=llm_user,
-        llm_args=llm_args_user,
-        language=language,
-    )
+    # Build the OTA verifier for supported domains
+    verifier = None
+    if (soundness_mode != "off" or completeness_mode != "off") and domain == "ota":
+        from vita.domains.ota.verifier import create_verifier
+        verifier = create_verifier(task, llm_model=llm_agent, language=language or "english", soundness_mode=soundness_mode, completeness_mode=completeness_mode, solo_user_message=user.solo_user_message)
 
     orchestrator = Orchestrator(
         domain=domain,
@@ -601,7 +683,8 @@ def _run_task_internal(
         max_errors=max_errors,
         seed=seed,
         solo_mode=solo_mode,
-        language=language
+        language=language,
+        verifier=verifier,
     )
     simulation = orchestrator.run()
 
@@ -763,6 +846,8 @@ def re_evaluate_simulation(config: RunConfig) -> Results:
             llm_evaluator=config.llm_evaluator,
             llm_args_evaluator=config.llm_args_evaluator,
             language=config.language,
+            soundness_mode=config.soundness_mode,
+            completeness_mode=config.completeness_mode,
         )
         
         # Remove old simulations for the re-run task IDs
@@ -894,7 +979,7 @@ def re_evaluate_simulation(config: RunConfig) -> Results:
 
     if config.csv_output_file and re_eval_results.simulations:
         try:
-            csv_output = config.csv_output_file
+            csv_output = _build_csv_path(config.csv_output_file, config.llm_agent)
             save_results_to_csv(re_eval_results, csv_output, config, metrics)
             ConsoleDisplay.console.print(f"\n💾 [bold green]Results appended to CSV: {csv_output}[/bold green]")
         except Exception as e:

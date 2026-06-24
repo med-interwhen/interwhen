@@ -2,6 +2,13 @@
 
 This file contains the descriptions and mappings for all tools decorated with @is_tool
 in the OTATools class.
+
+VitaBench overlay file — modified from the original VitaBench repo
+(https://github.com/meituan-longcat/vitabench), at src/vita/domains/ota/tools_schema.py.
+Everything is verbatim from the original except for the following change:
+
+1. Added the ``override`` argument description (Chinese and English) to the
+   schema of every WRITE tool that gained the ``override`` parameter in tools.py.
 """
 
 from typing import Dict, Any
@@ -109,7 +116,8 @@ TOOL_DESCRIPTIONS_ZH = {
         "args": {
             "hotel_id": "酒店ID",
             "room_id": "房间ID",
-            "user_id": "用户ID"
+            "user_id": "用户ID",
+            "override": "默认false，保持false除非你收到验证反馈且确信你的操作是正确的"
         },
         "returns": "创建订单操作的反馈输出",
         "tool_type": "WRITE"
@@ -124,7 +132,8 @@ TOOL_DESCRIPTIONS_ZH = {
             "ticket_id": "门票ID",
             "user_id": "用户ID",
             "date": "参观日期，格式为 %Y-%m-%d",
-            "quantity": "数量"
+            "quantity": "数量",
+            "override": "默认false，保持false除非你收到验证反馈且确信你的操作是正确的"
         },
         "returns": "创建订单操作的反馈输出",
         "tool_type": "WRITE"
@@ -139,7 +148,8 @@ TOOL_DESCRIPTIONS_ZH = {
             "seat_id": "座位ID",
             "user_id": "用户ID",
             "date": "出发日期",
-            "quantity": "数量"
+            "quantity": "数量",
+            "override": "默认false，保持false除非你收到验证反馈且确信你的操作是正确的"
         },
         "returns": "创建订单操作的反馈输出",
         "tool_type": "WRITE"
@@ -154,7 +164,8 @@ TOOL_DESCRIPTIONS_ZH = {
             "seat_id": "座位ID",
             "user_id": "用户ID",
             "date": "出发日期",
-            "quantity": "数量"
+            "quantity": "数量",
+            "override": "默认false，保持false除非你收到验证反馈且确信你的操作是正确的"
         },
         "returns": "创建订单操作的反馈输出",
         "tool_type": "WRITE"
@@ -307,7 +318,8 @@ TOOL_DESCRIPTIONS_ZH = {
         "args": {
             "order_id": "订单ID",
             "user_id": "用户ID",
-            "new_date": "新的出发日期，格式为 %Y-%m-%d"
+            "new_date": "新的出发日期，格式为 %Y-%m-%d",
+            "override": "默认false，保持false除非你收到验证反馈且确信你的操作是正确的"
         },
         "returns": "(修改后的订单内容, 差价，正为需补差价，负为退差价)",
         "tool_type": "WRITE"
@@ -320,7 +332,8 @@ TOOL_DESCRIPTIONS_ZH = {
         "args": {
             "order_id": "订单ID",
             "user_id": "用户ID",
-            "new_date": "新的出发日期，格式为 %Y-%m-%d"
+            "new_date": "新的出发日期，格式为 %Y-%m-%d",
+            "override": "默认false，保持false除非你收到验证反馈且确信你的操作是正确的"
         },
         "returns": "(修改后的订单内容, 差价，正为需补差价，负为退差价)",
         "tool_type": "WRITE"
@@ -332,7 +345,8 @@ TOOL_DESCRIPTIONS_ZH = {
         "postconditions": "取消订单并更新订单状态，若需退差价，告知用户即可",
         "args": {
             "order_id": "订单ID",
-            "user_id": "用户ID"
+            "user_id": "用户ID",
+            "override": "默认false，保持false除非你收到验证反馈且确信你的操作是正确的"
         },
         "returns": "取消订单的退款金额",
         "tool_type": "WRITE"
@@ -344,7 +358,8 @@ TOOL_DESCRIPTIONS_ZH = {
         "postconditions": "如果退差价，告知用户即可",
         "args": {
             "order_id": "订单ID",
-            "user_id": "用户ID"
+            "user_id": "用户ID",
+            "override": "默认false，保持false除非你收到验证反馈且确信你的操作是正确的"
         },
         "returns": "取消订单的退款金额",
         "tool_type": "WRITE"
@@ -356,7 +371,8 @@ TOOL_DESCRIPTIONS_ZH = {
         "postconditions": "如果退差价，告知用户即可",
         "args": {
             "order_id": "订单ID",
-            "user_id": "用户ID"
+            "user_id": "用户ID",
+            "override": "默认false，保持false除非你收到验证反馈且确信你的操作是正确的"
         },
         "returns": "取消订单的退款金额",
         "tool_type": "WRITE"
@@ -368,7 +384,8 @@ TOOL_DESCRIPTIONS_ZH = {
         "postconditions": "如果退差价，告知用户即可",
         "args": {
             "order_id": "订单ID",
-            "user_id": "用户ID"
+            "user_id": "用户ID",
+            "override": "默认false，保持false除非你收到验证反馈且确信你的操作是正确的"
         },
         "returns": "取消订单的退款金额",
         "tool_type": "WRITE"
@@ -477,7 +494,8 @@ TOOL_DESCRIPTIONS_EN = {
         "args": {
             "hotel_id": "Hotel ID",
             "product_id": "Room ID",
-            "user_id": "User ID"
+            "user_id": "User ID",
+            "override": "Default false. Only set to true if you received soundness feedback and are confident your action is correct"
         },
         "returns": "Feedback output of creating order operation",
         "tool_type": "WRITE"
@@ -492,7 +510,8 @@ TOOL_DESCRIPTIONS_EN = {
             "ticket_id": "Ticket ID",
             "user_id": "User ID",
             "date": "Visit date, format: %Y-%m-%d",
-            "quantity": "Quantity"
+            "quantity": "Quantity",
+            "override": "Default false. Only set to true if you received soundness feedback and are confident your action is correct"
         },
         "returns": "Feedback output of creating order operation",
         "tool_type": "WRITE"
@@ -507,7 +526,8 @@ TOOL_DESCRIPTIONS_EN = {
             "seat_id": "Seat ID",
             "user_id": "User ID",
             "date": "Departure date, format: %Y-%m-%d",
-            "quantity": "Quantity"
+            "quantity": "Quantity",
+            "override": "Default false. Only set to true if you received soundness feedback and are confident your action is correct"
         },
         "returns": "Feedback output of creating order operation",
         "tool_type": "WRITE"
@@ -522,7 +542,8 @@ TOOL_DESCRIPTIONS_EN = {
             "seat_id": "Seat ID",
             "user_id": "User ID",
             "date": "Departure date, format: %Y-%m-%d",
-            "quantity": "Quantity"
+            "quantity": "Quantity",
+            "override": "Default false. Only set to true if you received soundness feedback and are confident your action is correct"
         },
         "returns": "Feedback output of creating order operation",
         "tool_type": "WRITE"
@@ -675,7 +696,8 @@ TOOL_DESCRIPTIONS_EN = {
         "args": {
             "order_id": "Order ID",
             "user_id": "User ID",
-            "new_date": "New departure date, format: %Y-%m-%d"
+            "new_date": "New departure date, format: %Y-%m-%d",
+            "override": "Default false. Only set to true if you received validation feedback and are confident your action is correct"
         },
         "returns": "(Modified order content, price difference, positive means need to compensate, negative means refund)",
         "tool_type": "WRITE"
@@ -688,7 +710,8 @@ TOOL_DESCRIPTIONS_EN = {
         "args": {
             "order_id": "Order ID",
             "user_id": "User ID",
-            "new_date": "New departure date, format: %Y-%m-%d"
+            "new_date": "New departure date, format: %Y-%m-%d",
+            "override": "Default false. Only set to true if you received validation feedback and are confident your action is correct"
         },
         "returns": "(Modified order content, price difference, positive means need to compensate, negative means refund)",
         "tool_type": "WRITE"
@@ -700,7 +723,8 @@ TOOL_DESCRIPTIONS_EN = {
         "postconditions": "Cancel order and update order status, if refund is needed, inform user",
         "args": {
             "order_id": "Order ID",
-            "user_id": "User ID"
+            "user_id": "User ID",
+            "override": "Default false. Only set to true if you received validation feedback and are confident your action is correct"
         },
         "returns": "Order cancellation refund amount",
         "tool_type": "WRITE"
@@ -712,7 +736,8 @@ TOOL_DESCRIPTIONS_EN = {
         "postconditions": "If refund is needed, inform user",
         "args": {
             "order_id": "Order ID",
-            "user_id": "User ID"
+            "user_id": "User ID",
+            "override": "Default false. Only set to true if you received validation feedback and are confident your action is correct"
         },
         "returns": "Order cancellation refund amount",
         "tool_type": "WRITE"
@@ -724,7 +749,8 @@ TOOL_DESCRIPTIONS_EN = {
         "postconditions": "If refund is needed, inform user",
         "args": {
             "order_id": "Order ID",
-            "user_id": "User ID"
+            "user_id": "User ID",
+            "override": "Default false. Only set to true if you received validation feedback and are confident your action is correct"
         },
         "returns": "Order cancellation refund amount",
         "tool_type": "WRITE"
@@ -736,7 +762,8 @@ TOOL_DESCRIPTIONS_EN = {
         "postconditions": "If refund is needed, inform user",
         "args": {
             "order_id": "Order ID",
-            "user_id": "User ID"
+            "user_id": "User ID",
+            "override": "Default false. Only set to true if you received validation feedback and are confident your action is correct"
         },
         "returns": "Order cancellation refund amount",
         "tool_type": "WRITE"

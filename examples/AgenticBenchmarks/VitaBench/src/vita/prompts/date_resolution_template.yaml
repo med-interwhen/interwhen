@@ -1,0 +1,51 @@
+name: date_resolution_template
+chinese: |-
+  识别文本中的所有**相对日期表达**，解析为绝对日期，并输出替换后的文本。
+
+  当前模拟时间: {system_time}（{weekday}）
+
+  ## 规则
+  1. 找出所有相对日期表达（如"下周六"、"下个月1号"、"后天"、"七夕节后一天"等）。
+  2. 根据模拟时间解析为绝对日期。
+  3. 中国传统节日按农历转公历（七夕、中秋、春节等）。
+  4. 范围表达（如"这周末"、"下周"、"这周"）解析为起止日期，格式为 `YYYY-MM-DD to YYYY-MM-DD (星期X-星期X)`。月份表达（如"这个月"、"下个月"）仅解析为 `YYYY-MM`。
+  5. 替换后的指令中，将原始相对日期表达替换为上述格式。除日期外不要修改任何内容。
+  6. 在输出前，逐条验证每个日期的星期是否正确（例如 2026-06-20 实际是星期六，不是星期日）。如有不一致，修正日期或星期。
+
+  ## 输出格式
+  ```json
+  {{
+    "resolved_dates": [["原始短语", "YYYY-MM-DD", "星期X"], ...],
+    "resolved_instructions": "替换后的完整文本"
+  }}
+  ```
+
+  ## 待解析文本
+  {instructions}
+english: |-
+  You are a date resolution assistant. Your task is to identify all **relative date/time expressions** in some text, resolve them to absolute dates, and output the instructions with replacements applied.
+
+  Current simulated time: {system_time} ({weekday})
+
+  ## Rules
+  1. Find all relative date expressions in the instructions.
+  2. Relative expressions include but are not limited to: "next Saturday", "next month on the 1st", "this weekend", "the day after tomorrow", "two weeks from now on Saturday", "the day after Qixi Festival", etc.
+  3. Resolve the relative dates against the simulated time. Convert Chinese lunar festivals (Qixi, Mid-Autumn, Spring Festival, etc.) to Gregorian dates.
+  4. Range expressions (e.g. "this weekend", "next week", "this week") must be resolved to start and end dates: `YYYY-MM-DD to YYYY-MM-DD (DayOfWeek-DayOfWeek)`. Month-level expressions (e.g. "this month", "next month") resolve to just `YYYY-MM`.
+  5. In the resolved instructions, replace the original relative expressions with the formats above. Do not modify anything else — keep the original wording, tone, and punctuation exactly the same.
+  6. Before outputting, verify each date's day-of-week is correct (e.g. 2026-06-20 is actually a Saturday, not a Sunday). If there is a mismatch, fix the date or the day-of-week.
+
+  ## Output Format
+  Output a JSON object with two fields:
+  ```json
+  {{
+    "resolved_dates": [
+      ["original phrase", "YYYY-MM-DD", "DayOfWeek"],
+      ...
+    ],
+    "resolved_instructions": "Full instruction text with dates replaced"
+  }}
+  ```
+
+  ## Text to Resolve
+  {instructions}

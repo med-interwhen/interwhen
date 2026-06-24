@@ -1,3 +1,20 @@
+"""VitaBench overlay file — modified from the original VitaBench repo
+(https://github.com/meituan-longcat/vitabench), at src/vita/orchestrator/orchestrator.py.
+Everything is verbatim from the original except for the following changes:
+
+1. Added a ``verifier`` constructor argument plus completeness-retry state
+   (``VITA_MAX_COMPLETENESS_RETRIES``) and ``verifier_feedback_history``.
+2. Attached the verifier's ``soundness_log`` to the finalized ``SimulationRun``.
+3. On agent stop, run the verifier's completeness check and, if it returns
+   feedback, inject a synthetic ``completeness_check`` tool_call/tool_result pair
+   to send the agent back instead of stopping.
+4. In solo mode, nudge the agent back with a user message when it emits
+   non-tool-call text.
+5. Before executing each agent tool call, run the verifier's soundness check;
+   on feedback, return it as an error ToolMessage and skip execution (blocking),
+   and feed successful tool responses to the harness via ``observe_tool_response``.
+"""
+import os
 import time
 import uuid
 from copy import deepcopy
@@ -12,6 +29,7 @@ from vita.data_model.message import (
     AssistantMessage,
     Message,
     MultiToolMessage,
+    ToolCall,
     ToolMessage,
     UserMessage,
 )
@@ -61,6 +79,7 @@ class Orchestrator:
         seed: Optional[int] = None,
         solo_mode: bool = False,
         language: str = None,
+        verifier: Optional[Any] = None,
     ):
         self.domain = domain
         self.agent = agent
@@ -82,6 +101,10 @@ class Orchestrator:
         self.from_role: Optional[Role] = None
         self.to_role: Optional[Role] = None
         self.message: Optional[Message] = None
+        self.verifier = verifier
+        self.verifier_feedback_history: list = []
+        self._completeness_retries = 0
+        self._max_completeness_retries = int(os.environ.get("VITA_MAX_COMPLETENESS_RETRIES", 1))
 
     def initialize(self):
         """
@@ -248,7 +271,8 @@ class Orchestrator:
             agent_cost=agent_cost,
             messages=messages,
             seed=self.seed,
-            states=self.get_states(self.environment.tools.db, self.environment.tools.db.time)
+            states=self.get_states(self.environment.tools.db, self.environment.tools.db.time),
+            soundness_log=self.verifier.soundness_call_log if self.verifier and hasattr(self.verifier, "soundness_call_log") else None,
         )
         return simulation_run
 
@@ -314,23 +338,113 @@ class Orchestrator:
                 return
             
             agent_msg.validate()
+            completeness_feedback = None
             if self.agent.is_stop(agent_msg):
-                self.done = True
-                self.termination_reason = TerminationReason.AGENT_STOP
+                # Run completeness check before allowing stop
+                remaining = self._max_completeness_retries - self._completeness_retries
+                if remaining > 0 and self.verifier:
+                    states = self.get_states(self.environment.tools.db, self.environment.tools.db.time)
+                    completeness_feedback = self.verifier.check_on_stop(self.trajectory, remaining - 1, new_orders=states["new_states"], old_orders=states["old_states"])
+                    if completeness_feedback:
+                        self._completeness_retries += 1
+                    else:
+                        self.done = True
+                        self.termination_reason = TerminationReason.AGENT_STOP
+                else:
+                    self.done = True
+                    self.termination_reason = TerminationReason.AGENT_STOP
             self.trajectory.append(agent_msg)
             self.message = agent_msg
             self.from_role = Role.AGENT
-            if agent_msg.is_tool_call():
+            if completeness_feedback:
+                # Inject a matching fake tool_call into the agent message
+                # so its valid tool_use → tool_result pair
+                check_id = f"completeness_check_{self._completeness_retries}"
+                if agent_msg.tool_calls is None:
+                    agent_msg.tool_calls = []
+                agent_msg.tool_calls.append(ToolCall(
+                    id=check_id,
+                    name="completeness_check",
+                    arguments={},
+                    requestor="assistant",
+                ))
+                feedback_tool_msg = ToolMessage(
+                    id=check_id,
+                    name="completeness_check",
+                    content=completeness_feedback.strip(),
+                    requestor="assistant",
+                    role="tool",
+                    error=True,
+                )
+                self.trajectory.append(feedback_tool_msg)
+                self.message = feedback_tool_msg
+                self.from_role = Role.ENV
+                self.to_role = Role.AGENT
+            elif agent_msg.is_tool_call():
                 self.to_role = Role.ENV
+            elif self.solo_mode and not self.agent.is_stop(agent_msg):
+                # Agent tried to talk to a user that isn't there — nudge it back
+                logger.warning(f"Solo mode agent produced non-tool-call text, nudging back: {agent_msg}")
+                nudge_msg = UserMessage(
+                    role="user",
+                    content=(
+                        "There is no user to communicate with. "
+                        "You are operating solo — refer to the task instructions in previous messages. "
+                        "Continue making tool calls to complete the task, or call ###STOP### if done."
+                    ),
+                )
+                self.trajectory.append(nudge_msg)
+                self.message = nudge_msg
+                self.from_role = Role.USER
+                self.to_role = Role.AGENT
             else:
                 self.to_role = Role.USER
         elif self.from_role in [Role.AGENT, Role.USER] and self.to_role == Role.ENV:
             if not self.message.is_tool_call():
                 raise ValueError("Agent or User should send tool call to environment")
+            # Exclude the current agent message from the base trajectory so the judge
+            # does not see all sibling tool calls as already-executed prior history.
+            trajectory_before_current = self.trajectory[:-1]
             tool_msgs = []
             for tool_call in self.message.tool_calls:
+                soundness_feedback = None
+                if self.verifier:
+                    # Build context = prior trajectory + a mock assistant message containing
+                    # only the already-executed sibling tool_calls (so their IDs are registered
+                    # by _extract_tool_history) + their real responses.
+                    if tool_msgs:
+                        mock_assistant = deepcopy(self.message)
+                        mock_assistant.tool_calls = self.message.tool_calls[:len(tool_msgs)]
+                        trajectory_for_judge = trajectory_before_current + [mock_assistant] + tool_msgs
+                    else:
+                        trajectory_for_judge = trajectory_before_current
+                    soundness_feedback = self.verifier.check_soundness(
+                        tool_call.name, tool_call.arguments, trajectory_for_judge
+                    )
+                    if soundness_feedback:  # Blocking behavior: return feedback as error, skip execution
+                        tool_msgs.append(ToolMessage(
+                            id=tool_call.id,
+                            name=tool_call.name,
+                            content=soundness_feedback,
+                            requestor=tool_call.requestor,
+                            role="tool",
+                            error=True,
+                        ))
+                        continue
                 tool_msg = self.environment.get_response(tool_call)
+                # OLD: nudge behavior — prepend feedback to tool response
+                # if soundness_feedback:
+                #     tool_msg.content = (
+                #         soundness_feedback.strip()
+                #         + "\n\n"
+                #         + (tool_msg.content or "")
+                #     )
                 tool_msgs.append(tool_msg)
+                # Feed tool response to harness memory (if the verifier supports it)
+                if self.verifier and hasattr(self.verifier, "observe_tool_response"):
+                    self.verifier.observe_tool_response(
+                        tool_call.name, tool_call.arguments or {}, tool_msg.content or ""
+                    )
                 # Increment error count if tool call failed
                 if tool_msg.error:
                     self.num_errors += 1

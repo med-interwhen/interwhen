@@ -1,3 +1,13 @@
+"""VitaBench overlay file — modified from the original VitaBench repo
+(https://github.com/meituan-longcat/vitabench), at src/vita/user/user_simulator.py.
+Everything is verbatim from the original except for the following changes:
+
+1. Added a ``solo_user_message`` argument to ``DummyUser.__init__``.
+2. Added the ``DummyUser.build(...)`` classmethod that resolves the opening
+   message per ``solo_user_mode`` ('live' vs 'file').
+3. Added ``_fixed_message(...)`` and a short-circuit in ``generate_next_message``
+   that returns the pregenerated message without an LLM call.
+"""
 from typing import Optional, Tuple
 
 from loguru import logger
@@ -171,11 +181,54 @@ class DummyUser(BaseUser):
             llm: Optional[str] = None,
             llm_args: Optional[dict] = None,
             language: str = None,
+            solo_user_message: Optional[str] = None,
     ):
         super().__init__(instructions=instructions, llm=llm, llm_args=llm_args)
         self.tools = tools
         self.persona = persona
         self.language = language
+        self.solo_user_message = solo_user_message
+
+    @classmethod
+    def build(
+            cls,
+            task_id: str,
+            instructions: str,
+            persona: str,
+            llm: Optional[str] = None,
+            llm_args: Optional[dict] = None,
+            language: str = None,
+            solo_user_mode: str = "live",
+            solo_user_messages: Optional[dict] = None,
+    ) -> "DummyUser":
+        """Construct a DummyUser, resolving the user message according to the given mode.
+
+        Args:
+            task_id: ID of the task being run, used to look up the pregenerated message.
+            solo_user_mode: ``'live'`` — generate the opening message via LLM each run
+                (introduces variance); ``'file'`` — look up a pregenerated message from
+                *solo_user_messages* (deterministic, raises if the task is missing).
+            solo_user_messages: Mapping of task_id -> pregenerated message string.
+                Required when *solo_user_mode* is ``'file'``.
+        """
+        if solo_user_mode == "file":
+            if solo_user_messages is None or task_id not in solo_user_messages:
+                raise ValueError(
+                    f"solo_user_mode='file' but no pregenerated message found for task '{task_id}'. "
+                    "Run the pregeneration script first or switch to solo_user_mode='live'."
+                )
+            solo_user_message = solo_user_messages[task_id]
+        else:
+            solo_user_message = None
+
+        return cls(
+            instructions=instructions,
+            persona=persona,
+            llm=llm,
+            llm_args=llm_args,
+            language=language,
+            solo_user_message=solo_user_message,
+        )
 
     @property
     def system_prompt(self) -> str:
@@ -217,7 +270,21 @@ class DummyUser(BaseUser):
     def generate_next_message(
             self, message: ValidUserInputMessage, state: UserState
     ) -> Tuple[UserMessage, UserState]:
+        if self.solo_user_message is not None:
+            return self._fixed_message(message, state)
         return self._generate_next_message(message, state)
+
+    def _fixed_message(
+            self, message: ValidUserInputMessage, state: UserState
+    ) -> Tuple[UserMessage, UserState]:
+        """Return the pregenerated fixed message without calling the LLM."""
+        if isinstance(message, MultiToolMessage):
+            state.messages.extend(message.tool_messages)
+        else:
+            state.messages.append(message)
+        user_message = UserMessage(role="user", content=self.solo_user_message, cost=0.0)
+        state.messages.append(user_message)
+        return user_message, state
 
     def _generate_next_message(
             self, message: ValidUserInputMessage, state: UserState

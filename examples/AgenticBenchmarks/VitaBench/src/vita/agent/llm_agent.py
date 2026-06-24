@@ -1,3 +1,14 @@
+"""VitaBench overlay file — modified from the original VitaBench repo
+(https://github.com/meituan-longcat/vitabench), at src/vita/agent/llm_agent.py.
+Everything is verbatim from the original except for the following changes:
+
+1. ``LLMSoloAgent`` now stores ``self.language`` and builds its system prompt
+   with ``get_prompts(self.language)`` (was ``get_prompts()``), so solo runs
+   honour the requested language.
+2. Commented out the ``raise ValueError("LLMSoloAgent only supports tool calls
+   before ###STOP###.")`` guard in ``generate_next_message`` — the orchestrator
+   now nudges the agent back instead of hard-failing on a stray text turn.
+"""
 from copy import deepcopy
 from typing import List, Optional
 
@@ -147,10 +158,11 @@ class LLMSoloAgent(LocalAgent[LLMAgentState]):
         self.llm_args = deepcopy(llm_args) if llm_args is not None else {}
         self.time = time + " " + get_weekday(time, language)
         self.enable_think = enable_think
+        self.language = language
 
     @property
     def system_prompt(self) -> str:
-        prompts = get_prompts()
+        prompts = get_prompts(self.language)
         if self.time is not None:
             return prompts.solo_agent_system_prompt.format(
                 time=self.time
@@ -210,8 +222,8 @@ class LLMSoloAgent(LocalAgent[LLMAgentState]):
             enable_think=self.enable_think,
             **self.llm_args,
         )
-        if not assistant_message.is_tool_call() and not self.is_stop(assistant_message):
-            raise ValueError("LLMSoloAgent only supports tool calls before ###STOP###.")
+        # if not assistant_message.is_tool_call() and not self.is_stop(assistant_message):
+        #     raise ValueError("LLMSoloAgent only supports tool calls before ###STOP###.")
         state.messages.append(assistant_message)
         return assistant_message, state
 

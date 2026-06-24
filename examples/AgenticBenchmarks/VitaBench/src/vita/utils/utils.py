@@ -1,3 +1,11 @@
+"""VitaBench overlay file — modified from the original VitaBench repo
+(https://github.com/meituan-longcat/vitabench), at src/vita/utils/utils.py.
+Everything is verbatim from the original except for the following change:
+
+1. Rewrote ``evaluator_extracter`` to robustly extract the last valid JSON from
+   LLM output: it strips ``<think>`` blocks, tries ```json fences, then balanced
+   top-level ``{}`` / ``[]`` blocks, and finally falls back to ``repair_json``.
+"""
 import re
 import hashlib
 import json
@@ -233,8 +241,65 @@ def extract_json_fields(json_str):
 
 def evaluator_extracter(content: str) -> list[dict]:
     """
-    Extract the result from the content.
+    Extract the last valid JSON object/array from LLM output.
+
+    The LLM may emit reasoning text with stray brackets (e.g. "[10]") or
+    multiple JSON blocks (reconsidering). We find all candidates and take
+    the last one that parses.
     """
-    good_json_string = repair_json(content)
-    result_data = json.loads(good_json_string)
-    return result_data
+    # Strip <think>...</think> blocks
+    text = content.split("</think>")[-1].strip()
+
+    # 1. Try all ```json fences, take the last valid one
+    fence_matches = re.findall(r"```(?:json)?(.*?)```", text, re.DOTALL)
+    for candidate in reversed(fence_matches):
+        candidate = candidate.strip()
+        if not candidate:
+            continue
+        try:
+            return json.loads(candidate)
+        except json.JSONDecodeError:
+            continue
+
+    # 2. Find balanced top-level [ ] and { } blocks, take the last valid one
+    candidates: list[str] = []
+    depth = 0
+    start = -1
+    in_string = False
+    escape = False
+    open_char = None
+    for i, ch in enumerate(text):
+        if escape:
+            escape = False
+            continue
+        if ch == '\\' and in_string:
+            escape = True
+            continue
+        if ch == '"' and not escape:
+            in_string = not in_string
+            continue
+        if in_string:
+            continue
+        if depth == 0 and ch in ('{', '['):
+            start = i
+            open_char = ch
+            depth = 1
+        elif depth > 0:
+            close_char = '}' if open_char == '{' else ']'
+            if ch == open_char:
+                depth += 1
+            elif ch == close_char:
+                depth -= 1
+                if depth == 0 and start != -1:
+                    candidates.append(text[start:i + 1])
+                    start = -1
+
+    for candidate in reversed(candidates):
+        try:
+            return json.loads(candidate)
+        except json.JSONDecodeError:
+            continue
+
+    # 3. Last resort: pass entire content to repair_json
+    good_json_string = repair_json(text)
+    return json.loads(good_json_string)

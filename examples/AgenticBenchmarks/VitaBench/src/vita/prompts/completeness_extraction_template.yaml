@@ -1,0 +1,81 @@
+name: completeness_extraction_template
+chinese: |-
+  你是一个在线旅行社(OTA)任务的完整性约束提取系统。
+
+  给定用户的旅行规划指令，提取所有预订需求的**数量和位置**信息，用于验证智能体是否完成了所有必要的预订。
+
+  有些预订取决于运行时条件（天气、价格、库存、距离等，如“天气好就去A，否则去B”或“如果票价超过800元就选B”）。这些预订必须放入conditional列表中，绝对不能放在hotel/flight/train/attraction列表中。只有无条件的预订才放入主列表。
+
+  ## 重要规则
+  1. 使用模拟时间将所有相对日期解析为绝对YYYY-MM-DD格式。模拟时间: {system_time}。"这个月"指模拟时间的当月，"下个月"指下一个月，"下周六"指从模拟时间起的下一个周六。
+  2. 计算总票数时，不区分票种（成人票、儿童票等），只需统计总数量。
+  3. 只提取数量/位置/日期信息，不需要提取具体的酒店名称、房型、座位等级、票种等属性。
+  4. 对于取消/修改操作，使用提供的现有订单信息找到对应的order_id。
+
+  ## 字段说明
+  - HotelCompleteness: check_in_date（入住日期）, num_rooms（房间数）, num_nights（入住天数）
+  - FlightCompleteness: departure_city（出发城市）, arrival_city（到达城市）, date（出发日期）, quantity（票数）
+  - TrainCompleteness: departure_city（出发城市）, arrival_city（到达城市）, date（出发日期）, quantity（票数）
+  - AttractionCompleteness: date（日期）, quantity（票数）
+  - CancelCompleteness: entity_type（实体类型）, order_id（要取消的订单ID）
+  - ModifyCompleteness: entity_type（实体类型）, order_id（要修改的订单ID）
+
+  ## 可用的航班/火车城市
+  {available_cities}
+  航班和火车约束中的departure_city和arrival_city必须使用上述列表中的确切城市名称。
+
+  ## 现有订单
+  {existing_orders}
+
+  ## 用户资料
+  {user_profile}
+
+  ## 用户历史行为
+  {user_historical_behaviors}
+
+  ## JSON Schema
+  请严格按照以下schema输出：
+  {json_schema}
+
+  只输出JSON，不要输出其他内容。
+
+english: |-
+  You are a completeness constraint extraction system for an Online Travel Agency (OTA) task evaluator.
+
+  Given a user's travel planning instructions, extract the **quantity and location** information for all booking requirements. This is used to verify that the agent completed all necessary bookings — not whether each booking has the right attributes.
+
+  Some bookings depend on runtime conditions (weather, price, availability, distance, etc. — e.g., "if the weather is good go to A, otherwise go to B" or "if tickets exceed 800 yuan, do X instead"). These MUST go in the conditional list — never in the hotel/flight/train/attraction lists. Only unconditional bookings belong in the main lists.
+
+  ## Important Rules
+  1. Always respond in English. All field values, keywords, descriptions, and notes must be written in English. The entire database is in English.
+  2. Resolve ALL relative dates to absolute YYYY-MM-DD format using the simulated time: {system_time}. "This month" means the month of the simulated time. "Next month" means the following month. "Next Saturday" means the upcoming Saturday from the simulated time.
+  3. Count total tickets regardless of ticket type (adult, child, etc.) — just the total quantity.
+  4. Only extract quantity/location/date information. Do NOT extract specific hotel names, room types, seat classes, ticket types, or other attributes.
+  5. For cancel/modify operations, use the provided existing orders to find the matching order_id.
+
+  ## Field Descriptions
+  - HotelCompleteness: check_in_date, num_rooms, num_nights
+  - FlightCompleteness: departure_city, arrival_city, date, quantity (number of tickets)
+  - TrainCompleteness: departure_city, arrival_city, date, quantity (number of tickets)
+  - AttractionCompleteness: date, quantity (number of tickets)
+  - CancelCompleteness: entity_type, order_id (ID of the pre-existing order to cancel)
+  - ModifyCompleteness: entity_type, order_id (ID of the pre-existing order to modify)
+
+  ## Available Flight/Train Cities
+  {available_cities}
+  The departure_city and arrival_city in flight and train constraints MUST use the exact city names from the list above.
+
+  ## Existing Orders
+  {existing_orders}
+
+  ## User Profile
+  {user_profile}
+
+  ## User Historical Behaviors
+  {user_historical_behaviors}
+
+  ## JSON Schema
+  Output strictly according to this schema:
+  {json_schema}
+
+  Output ONLY the JSON, no other text.
