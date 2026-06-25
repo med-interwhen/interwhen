@@ -6,6 +6,18 @@ Changes from the free-reasoning version:
   - exact_correctness_check is unchanged: [FINAL ANSWER] block format is the same.
   - No other logic changes required — the monitor/verifier swap is transparent
     to the pipeline runner.
+
+NEW in this version (graph verification layer):
+  - --run_graph_checks turns on GraphAwareVerifier inside MedicalMonitor.
+    Off by default; existing runs are byte-for-byte unaffected unless you
+    pass this flag.
+  - --snowstorm_base_url overrides the SNOMED relationship endpoint used for
+    CUI validation and edge confirmation (defaults to the public IHTSDO
+    browser instance — see medical_graph.SnomedRelationshipClient).
+  - Per-sample results now include "graph_summary" (node/edge/contradiction
+    counts) when graph checks are enabled, for the ablation study: how many
+    cases did the global consistency check catch that the per-section check
+    missed.
 """
 
 from __future__ import annotations
@@ -202,12 +214,14 @@ def run(args, sample: dict) -> dict:
     monitors = []
     if args.monitor:
         monitors = [MedicalMonitor(
-            name             = "MedicalVerifier",
-            instance         = sample,
-            max_corrections  = args.monitor_max_corrections,
-            verifier_port    = args.verifier_port,
-            verifier_model   = args.verifier_model,
-            run_snomed       = not args.no_snomed,
+            name                = "MedicalVerifier",
+            instance            = sample,
+            max_corrections     = args.monitor_max_corrections,
+            verifier_port       = args.verifier_port,
+            verifier_model      = args.verifier_model,
+            run_snomed          = not args.no_snomed,
+            run_graph_checks    = args.run_graph_checks,
+            snowstorm_base_url  = args.snowstorm_base_url,
         )]
 
     output_text = asyncio.run(stream_completion(
@@ -222,6 +236,10 @@ def run(args, sample: dict) -> dict:
     section_audit = structured_section_completeness_check(output_text)
     decision_log  = monitors[0].verifier.decision_log if monitors else []
 
+    graph_summary = None
+    if monitors and args.run_graph_checks and hasattr(monitors[0].verifier, "graph_summary"):
+        graph_summary = monitors[0].verifier.graph_summary()
+
     result = {
         "sample_id":       sample["id"],
         "question":        sample["question"],
@@ -231,6 +249,7 @@ def run(args, sample: dict) -> dict:
         "exact_matched":   exact_matched is not None,
         "section_audit":   section_audit,     # which structured sections were present
         "decision_log":    decision_log,
+        "graph_summary":   graph_summary,      # node/edge/contradiction counts, or None
     }
     with open(f"{args.output_dir}/outputs.jsonl", "a") as f:
         f.write(json.dumps(result, default=str) + "\n")
@@ -255,6 +274,15 @@ def parse_args():
     ap.add_argument("--verifier_model",          type=str,  default="medverifier")
     ap.add_argument("--monitor_max_corrections", type=int,  default=5)
     ap.add_argument("--no_snomed",               action="store_true")
+    ap.add_argument("--run_graph_checks",        action="store_true",
+                     help="Enable the CUI-grounded graph verification layer "
+                          "(GraphAwareVerifier). Off by default. Requires a "
+                          "reachable Snowstorm endpoint for edge confirmation "
+                          "to actually do anything — see medical_graph.py.")
+    ap.add_argument("--snowstorm_base_url",      type=str,  default=None,
+                     help="Override the Snowstorm SNOMED CT relationship "
+                          "endpoint used by --run_graph_checks. Defaults to "
+                          "the public IHTSDO browser instance if unset.")
     ap.add_argument("--split",                   type=str,  default="train")
     ap.add_argument("--max_samples",             type=int,  default=20)
     ap.add_argument("--start_idx",               type=int,  default=0)
@@ -318,6 +346,19 @@ def main():
         for tag in SECTION_TAG_TO_TYPE:
             count = sum(1 for r in results if r.get("section_audit", {}).get(tag, False))
             print(f"  [{tag}]  {count}/{len(results)}")
+
+    # Graph contradiction summary — the actual ablation metric: how many
+    # samples had at least one cross-chunk contradiction caught by the graph
+    # layer that the per-section LLM check alone would have missed.
+    if args.run_graph_checks:
+        graph_results = [r.get("graph_summary") for r in results if r.get("graph_summary")]
+        if graph_results:
+            with_contradictions = sum(1 for g in graph_results if g.get("contradiction_count", 0) > 0)
+            total_contradictions = sum(g.get("contradiction_count", 0) for g in graph_results)
+            print("\nGraph verification (--run_graph_checks):")
+            print(f"  Samples with >=1 cross-chunk contradiction caught: "
+                  f"{with_contradictions}/{len(graph_results)}")
+            print(f"  Total contradictions caught across all samples:    {total_contradictions}")
 
     print(f"\nOutput -> {output_file}")
 

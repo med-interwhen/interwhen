@@ -30,6 +30,11 @@ from ..utils.medical_verifier_snomed import (
     MedicalReasoningVerifierSnomedFirst,
     SnomedFirstConfig,
 )
+from ..utils.medical_verifier_graph import (
+    GraphAwareVerifier,
+    GraphVerifierConfig,
+)
+from ..utils.medical_graph import SnomedRelationshipClient
 from ..utils.medical_prompts import ALL_CLOSE_TAGS   # e.g. ("[/OBSERVATION]", "[/INFERENCE]", …)
 
 logger = logging.getLogger(__name__)
@@ -65,6 +70,20 @@ class MedicalMonitor(VerifyMonitor):
     The verifier reads the section tag directly, routes to the appropriate
     check, and returns (passed, feedback). On failure, feedback is injected
     and the solver retries. On max_corrections, generation stops.
+
+    Graph verification (run_graph_checks, opt-in)
+    ----------------------------------------------
+    When run_graph_checks=True, the verifier is GraphAwareVerifier instead of
+    MedicalReasoningVerifierSnomedFirst. It runs every existing check
+    unchanged, then ALSO maps entities to validated SNOMED CUIs, builds a
+    running cross-section concept graph, and can downgrade an otherwise-
+    passing [INFERENCE] or [OPTION_COMPARISON] section if it contradicts an
+    earlier section's claim. Off by default because it depends on a
+    Snowstorm relationship endpoint (see medical_graph.py) that was not
+    validated against a live instance when this was written — if that
+    endpoint is unreachable, graph checks degrade to a harmless no-op rather
+    than failing closed, but you should confirm connectivity before relying
+    on it to catch anything.
     """
 
     def __init__(
@@ -76,6 +95,8 @@ class MedicalMonitor(VerifyMonitor):
         verifier_port:   int  = 8001,
         verifier_model:  str  = "medverifier",
         run_snomed:      bool = True,
+        run_graph_checks: bool = False,   # NEW — opt-in, see class docstring
+        snowstorm_base_url: Optional[str] = None,  # NEW — passed to SnomedRelationshipClient
         think_open_tag:  str  = "<think>",
         think_close_tag: str  = "</think>",
         priority:        int  = 0,
@@ -110,13 +131,35 @@ class MedicalMonitor(VerifyMonitor):
         logger.info("[MedicalMonitor] Pre-fetching SNOMED for option terms...")
         snomed_cache = prep.prefetch_snomed(question, options)
 
-        self.verifier = MedicalReasoningVerifierSnomedFirst(
-            vllm         = self.vllm_client,
-            snomed       = self.snomed_client,
-            config       = SnomedFirstConfig(run_snomed=run_snomed),
-            compact_case = compact_case,
-            snomed_cache = snomed_cache,
-        )
+        if run_graph_checks:
+            relationship_client = self._try_build_relationship_client(snowstorm_base_url)
+            self.verifier = GraphAwareVerifier(
+                vllm                = self.vllm_client,
+                snomed              = self.snomed_client,
+                config              = GraphVerifierConfig(run_snomed=run_snomed,
+                                                            run_graph_checks=True),
+                compact_case        = compact_case,
+                snomed_cache        = snomed_cache,
+                relationship_client = relationship_client,
+            )
+        else:
+            self.verifier = MedicalReasoningVerifierSnomedFirst(
+                vllm         = self.vllm_client,
+                snomed       = self.snomed_client,
+                config       = SnomedFirstConfig(run_snomed=run_snomed),
+                compact_case = compact_case,
+                snomed_cache = snomed_cache,
+            )
+
+    @staticmethod
+    def _try_build_relationship_client(
+        base_url: Optional[str],
+    ) -> Optional[SnomedRelationshipClient]:
+        try:
+            return SnomedRelationshipClient(base_url=base_url)
+        except Exception as e:
+            logger.warning("[MedicalMonitor] SnomedRelationshipClient unavailable: %s", e)
+            return None
 
     # ── Internal helpers ──────────────────────────────────────────────────────
 
@@ -136,7 +179,7 @@ class MedicalMonitor(VerifyMonitor):
 
     # ── step_extractor ────────────────────────────────────────────────────────
 
-    def step_extractor(self, chunk: str, generated_text: str) -> Tuple[bool, Optional[str]]:
+    def step_extractor(self, chunk: str, generated_text: str) -> bool:
         """
         Triggers verification on:
           1. Any section close tag in the chunk — a complete structured section
@@ -145,9 +188,17 @@ class MedicalMonitor(VerifyMonitor):
              trigger early so SNOMED enrichment can be injected.
 
         Only fires inside the <think> block.
+
+        Returns a bare bool, matching VerifyMonitor's documented contract
+        ("Returns: Boolean indicating if more steps should be generated").
+        The original version of this method returned a (bool, str|None)
+        2-tuple; that is dropped here because a non-empty tuple is always
+        truthy in Python regardless of its first element, so any caller
+        that does `if monitor.step_extractor(...):` would have triggered
+        verification on every chunk rather than only on real triggers.
         """
         if not self._is_in_think_block(generated_text):
-            return False, None
+            return False
 
         # Primary trigger: section close tag
         for close_tag in ALL_CLOSE_TAGS:
@@ -155,14 +206,15 @@ class MedicalMonitor(VerifyMonitor):
                 logger.debug(
                     "[MedicalMonitor.step_extractor] Close tag '%s' detected.", close_tag
                 )
-                return True, generated_text
+                return True
 
         # Secondary trigger: UNKNOWN uncertainty signal
         if "UNKNOWN:" in chunk:
             logger.debug("[MedicalMonitor.step_extractor] UNKNOWN signal detected.")
-            return True, generated_text
+            return True
 
-        return False, None
+        return False
+
 
     # ── verify ────────────────────────────────────────────────────────────────
 

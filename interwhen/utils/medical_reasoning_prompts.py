@@ -385,6 +385,62 @@ Output format:
 }}
 """
 
+    # ── ENTITY-TO-CUI MAPPING  (new — graph pipeline) ─────────────────────────
+    # Replaces the flat string-list output of build_snomed_term_extraction_prompt
+    # with a structured span->CUI candidate mapping, plus a claimed relation
+    # between the two most clinically salient entities in the section. The CUI
+    # is a CANDIDATE only — medical_graph.EntityMapper validates it against
+    # SnomedRelationshipClient before it is trusted anywhere downstream.
+
+    @classmethod
+    def build_entity_cui_mapping_prompt(
+        cls,
+        *,
+        question:        str,
+        options_text:    str,
+        section_body:    str,
+    ) -> str:
+        return f"""{C.ROLE_VERIFIER}
+
+Identify the clinically salient entities in the reasoning section below and
+propose a SNOMED CT concept (CUI candidate) for each one.
+
+Rules:
+- Return ONLY valid JSON.
+- Only include entities you can name a plausible SNOMED CT concept for —
+  disorders, findings, symptoms, body structures, substances, procedures,
+  organisms. Skip vague or non-clinical spans.
+- "cui_candidate" is your best guess at the SNOMED CT identifier if you know
+  it, else null. It will be independently validated — do not fabricate a
+  number with false confidence; use null and a clear "fsn_candidate" instead
+  if you are not sure of the exact code.
+- "confidence" reflects how sure you are this span maps to this exact
+  concept (0.0-1.0), not how sure you are the concept exists in SNOMED.
+- If the section asserts a relationship between two entities (e.g. "X causes
+  Y", "X is a risk factor for Y", "X is treated with Y"), report it once in
+  "claimed_relation". If no clear relation is asserted, set it to null.
+- Do not include duplicate entities.
+
+Question:
+{question}
+
+Options:
+{options_text}
+
+Reasoning section:
+{section_body}
+
+Output format:
+{{
+    "entities": [
+        {{"span": "exact text span", "fsn_candidate": "preferred SNOMED term", "cui_candidate": "id or null", "confidence": 0.0}}
+    ],
+    "claimed_relation": {{"source_span": "...", "target_span": "...", "relation_type": "causes|treats|finding_site|associated_with|risk_factor|contraindicated_with|other"}}
+}}
+
+If there is no relation, set "claimed_relation" to null.
+"""
+
     # ── HYPOTHESIS — REASONING TRACE (unchanged) ──────────────────────────────
 
     @classmethod
