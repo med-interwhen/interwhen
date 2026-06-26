@@ -1,0 +1,90 @@
+[
+  {
+    "sample_id": "7148",
+    "question": "The arrow marked structure is which part of corpus callosum:",
+    "ground_truth": "D",
+    "stored_correct": false,
+    "category": "missing_image_or_figure",
+    "reason": "Question refers to an arrow on an image; arrow location is never described in text."
+  },
+  {
+    "sample_id": "7397",
+    "question": "With help of the drug shown below, serotonin is synthesized from which of the following precursor amino acid?",
+    "ground_truth": "A",
+    "stored_correct": true,
+    "category": "missing_image_or_figure",
+    "reason": "References a chemical structure diagram ('drug shown below') that is never shown."
+  },
+  {
+    "sample_id": "7607",
+    "question": "What could be the possible diagnosis as per the given X-ray?",
+    "ground_truth": "A",
+    "stored_correct": false,
+    "category": "missing_image_or_figure",
+    "reason": "Asks for diagnosis 'as per the given X-ray' with zero findings described in text."
+  },
+  {
+    "sample_id": "7761",
+    "question": "In the absence of any clear history of trauma, this radiograph done in a patient of shoulder pain most likely suggests:",
+    "ground_truth": "B",
+    "stored_correct": true,
+    "category": "missing_image_or_figure",
+    "reason": "References a radiograph with no findings described in text."
+  },
+  {
+    "sample_id": "8058",
+    "question": "A 22-year-old man has symptoms of low back pain and stiffness. After several months of mild symptoms, he notes more severe stiffness at night and hip pain. On physical examination, there is paravertebral muscle tenderness and limited flexion of the lumbar spine. Figure shows an x-ray of the lumbar spine. Which of the following is the most likely diagnosis?",
+    "ground_truth": "C",
+    "stored_correct": true,
+    "category": "missing_image_or_figure_borderline",
+    "reason": "Clinical vignette is suggestive on its own (young man, AM stiffness, back pain -> classic AS pattern), but final diagnosis is explicitly pushed onto a 'Figure' (x-ray) that is never shown."
+  },
+  {
+    "sample_id": "8176",
+    "question": "Based upon this PA ulnar detion view of the wrist, what is the MOST likely diagnosis?",
+    "ground_truth": "B",
+    "stored_correct": false,
+    "category": "missing_image_or_figure",
+    "reason": "Asks for diagnosis based on a specific wrist X-ray view with no findings described."
+  },
+  {
+    "sample_id": "8501",
+    "question": "A 24-year-old male law student presents with a 3-wk history of increasing dyspnea. He has a history of chronic sputum production of about 100 cc of purulent material each day for many years. In the past, he was hospitalized for a left pneumothorax. He is on inhaled bronchodilator as an outpatient. CXR is shown below.The most helpful treatment option would be",
+    "ground_truth": "C",
+    "stored_correct": true,
+    "category": "missing_image_or_figure",
+    "reason": "Treatment decision depends on a CXR ('shown below') that is never described or shown."
+  },
+  {
+    "sample_id": "8552",
+    "question": "What is the abnormality shown in this shoulder Radiograph?",
+    "ground_truth": "B",
+    "stored_correct": false,
+    "category": "missing_image_or_figure",
+    "reason": "Asks for the abnormality shown in a radiograph with no findings described."
+  },
+  {
+    "sample_id": "8084",
+    "question": "Comment on the site of damage for a patient exhibiting the following symptom?",
+    "ground_truth": "B",
+    "stored_correct": true,
+    "category": "incomplete_question_stem",
+    "reason": "Stem says 'exhibiting the following symptom' but no symptom is actually stated -- the question text itself is truncated/corrupted."
+  },
+  {
+    "sample_id": "8070",
+    "question": "Vitamin B level in chronic myeloid leukemia is",
+    "ground_truth": "A",
+    "stored_correct": false,
+    "category": "model_behavior_not_question_defect",
+    "reason": "Question is answerable from pure textbook knowledge (CML -> elevated B12), but the model wrongly treated it as needing patient-specific lab data it didn't have."
+  },
+  {
+    "sample_id": "7772",
+    "question": "FNAC is the IOC is given below thyroid conditions except",
+    "ground_truth": "C",
+    "stored_correct": false,
+    "category": "garbled_question_text",
+    "reason": "Stem reads 'FNAC is the IOC is given below thyroid conditions except' -- likely an OCR/scraping artifact from the source question bank, not an image-dependency issue."
+  }
+]

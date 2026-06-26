@@ -6,7 +6,7 @@ from each record's [FINAL ANSWER] block, then asks a vLLM-hosted Qwen 30B model
 to judge whether the prediction matches the ground truth.
 
 Usage:
-    python evaluate_with_vllm_judge.py --input outputs.jsonl --output judge_results.jsonl --base-url http://localhost:8000/v1 --model Qwen/Qwen3-30B-A3B-Thinking-2507 --limit 100
+    python evaluate_with_vllm_judge.py --input examples\TTSwithVerification\interwhen\Outputs_TTS\medreason\20260622_003340\outputs.jsonl  --output judge_results_20260622.jsonl --base-url http://localhost:8001/v1 --model Qwen/Qwen3-30B-A3B-Thinking-2507 --limit 100
 
 vLLM server (example):
     vllm serve Qwen/Qwen3-30B-A3B-Thinking-2507 \
