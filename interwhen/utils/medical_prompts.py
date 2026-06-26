@@ -23,11 +23,12 @@ Cover:
 When you are uncertain about a clinical claim, write UNKNOWN inline and note
 what information would resolve it. Continue reasoning.
 
+You may receive [FEEDBACK] during your reasoning. Incorporate it immediately
+under a "Revision:" line and continue.
+
 ## Final Answer
 
-Once you have finished thinking, write your final answer in your response —
-NOT inside your reasoning. It must appear after your thinking is complete.
-Do not change the selected option from what you concluded in your reasoning.
+End with:
 
 [FINAL ANSWER]
 Selected Option: <exact option letter, e.g. A>

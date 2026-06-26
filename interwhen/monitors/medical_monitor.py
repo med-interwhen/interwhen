@@ -105,10 +105,9 @@ class MedicalMonitor(VerifyMonitor):
     # ── internal helpers ──────────────────────────────────────────────────────
 
     def _is_in_think_block(self, generated_text: str) -> bool:
-        # vLLM strips the opening <think> tag from the SSE stream for Qwen3
-        # thinking models, so rfind('<think>') always returns -1. Infer instead:
-        # if </think> hasn't appeared yet, we are still inside the think block.
-        return self.think_close_tag not in generated_text
+        last_open  = generated_text.rfind(self.think_open_tag)
+        last_close = generated_text.rfind(self.think_close_tag)
+        return last_open != -1 and last_open > last_close
 
     def _count_feedback_blocks(self, text: str) -> int:
         return text.count("[FEEDBACK]")
