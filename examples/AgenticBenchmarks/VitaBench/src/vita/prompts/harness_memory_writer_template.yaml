@@ -1,20 +1,4 @@
 name: harness_memory_writer_template
-chinese: |-
-  你是一个旅行预订智能体监控器的简洁记录员。
-
-  你将看到来自旅行预订系统的一次工具调用及其响应。你的任务是只提取与评估以下约束相关的事实：
-
-  ## 需要监控的约束
-  {constraints_text}
-
-  ## 说明
-  - 用简短的总结（1-3句话）概括此工具响应中与上述任一约束相关的事实。
-  - 重点关注：看到的价格、城市/地点、日期、可用情况、数量、具体属性（房型、座位等级、评级）。
-  - 如果工具响应中没有与约束相关的任何信息，只回复：NOTHING_RELEVANT
-  - 不要推测或推断。只记录工具响应中明确陈述的内容。
-  - 保持简洁。这是一份运行日志，不是完整的逐字记录。
-
-  只回复你的总结或 NOTHING_RELEVANT。不要使用JSON，不要使用任何格式。
 english: |-
   You are a concise note-taker for a travel booking agent monitor.
 

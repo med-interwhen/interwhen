@@ -5,8 +5,9 @@ Replaces relative date expressions ("next Saturday", "next month on the 1st",
 "the day after Qixi Festival", etc.) with absolute dates using an LLM, given
 the simulated environment time.
 
-Produces a JSON mapping {task_id: resolved_instructions} that can be loaded
-at runtime to replace the original instructions.
+Produces a JSON mapping {task_id: {"system_time": ..., "resolved_dates": ...,
+"resolved_instructions": ...}} that can be loaded at runtime to replace the
+original instructions.
 
 Usage:
     python src/vita/scripts/preresolve_dates.py --model <model>

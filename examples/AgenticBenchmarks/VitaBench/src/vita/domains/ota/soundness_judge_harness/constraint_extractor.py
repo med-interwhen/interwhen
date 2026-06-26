@@ -51,8 +51,8 @@ def extract_constraints(
             user_profile = str(profile)
 
     system_time = ""
-    if task.environment and "system_time" in task.environment:
-        system_time = task.environment["system_time"]
+    if task.environment and "time" in task.environment:
+        system_time = task.environment["time"]
 
     system_content = get_prompts(language).harness_constraint_extraction_template.format(
         system_time=system_time or "(not specified)",

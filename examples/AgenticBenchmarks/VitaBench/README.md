@@ -55,6 +55,15 @@ cp -r "$SRC/src" "$DST/"    # merge the overlay sources into the clone
 | `src/vita/prompts/*.yaml` | New prompt templates: soundness/harness judges, constraint & completeness extraction, memory writer, and date resolution. |
 | `src/vita/scripts/` | Offline preprocessing scripts and their guide — see [`src/vita/scripts/README.md`](src/vita/scripts/README.md). |
 
+**Note on prompt language:** The prompt templates for our verifiers in this overlay come with **English prompts only**. For `--language chinese`, please add your own translations to:
+
+ - `src/vita/prompts/completeness_extraction_template.yaml`
+ - `src/vita/prompts/date_resolution_template.yaml`
+ - `src/vita/prompts/harness_constraint_extraction_template.yaml`
+ - `src/vita/prompts/harness_memory_writer_template.yaml`
+ - `src/vita/prompts/harness_soundness_judge_template.yaml`
+ - `src/vita/prompts/soundness_judge_template.yaml`
+
 ## 3. Python environment
 
 Follow the upstream VitaBench README.

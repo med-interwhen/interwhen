@@ -4,9 +4,10 @@ import json
 import re
 
 
-def _extract_json(text: str) -> dict | list | None:
-    """Extract JSON object/array from text that may have thinking prefix.
+def _extract_json(text: str) -> dict | None:
+    """Extract a JSON object from text that may have a thinking prefix.
 
+    All callers expect a top-level JSON object, so only objects are recovered.
     When the LLM emits multiple JSON blocks (e.g. it reconsiders and outputs a
     corrected version), we take the *last* valid JSON object.
     """

@@ -62,8 +62,6 @@ def pregenerate(
             resolved = json.load(fp)
         logger.info(f"Loaded {len(resolved)} resolved instructions from {resolved_instructions_file}")
 
-    tasks = [Task.model_validate(t) for t in raw_tasks]
-
     if task_ids is not None:
         tasks = [t for t in tasks if t.id in task_ids]
         if len(tasks) != len(task_ids):
