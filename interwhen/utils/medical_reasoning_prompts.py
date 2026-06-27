@@ -144,6 +144,67 @@ Output format (if issues found):
 """
 
     @classmethod
+    @classmethod
+    def build_inference_verification_prompt(
+        cls,
+        *,
+        compact_case: str,
+        compact_state: str,
+        options_text: str,
+        snomed_context: str,
+        paragraph: str,
+        allow_unknown: bool = True,
+    ) -> str:
+        unknown_rule  = f"{C.UNKNOWN_TRACE_HYPO}\n" if allow_unknown else ""
+        snomed_section = f"SNOMED CT Definitions:\n{snomed_context}" if snomed_context.strip() else ""
+        allowed        = cls._allowed_labels(allow_unknown)
+
+        return f"""{C.ROLE_VERIFIER}
+
+Verify the following reasoning paragraph. The model is choosing between the
+listed options — judge whether the reasoning is medically valid AND correctly
+supports or eliminates the appropriate options.
+
+Rules:
+{C.RULE_VALID_REASONING}
+{C.TRUE_TRACE_HYPO}
+{C.FALSE_TRACE_HYPO}
+{unknown_rule}{C.RULE_CONSISTENT}
+{C.RETURN_JSON}
+
+Case Facts:
+{compact_case}
+
+Established So Far:
+{compact_state}
+
+Options:
+{options_text}
+
+{snomed_section}
+
+Paragraph to Verify:
+{paragraph}
+
+Allowed Labels: {allowed}
+
+Output format (if correct):
+{{
+    "label": "TRUE",
+    "evidence": ["reason this is correct"],
+    "wrong_claim": null,
+    "correction": null
+}}
+
+Output format (if incorrect):
+{{
+    "label": "FALSE",
+    "evidence": ["what is wrong and why"],
+    "wrong_claim": "the specific incorrect statement verbatim",
+    "correction": "what the correct reasoning should state"
+}}
+"""
+
     def build_reasoning_hypothesis_prompt(
         cls,
         *,

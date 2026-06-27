@@ -118,8 +118,12 @@ class MedicalMonitor(VerifyMonitor):
         if not self._is_in_think_block(generated_text):
             return False, None
         if "UNKNOWN" in chunk:
+            logger.info("[MONITOR] Trigger: UNKNOWN in solver chunk")
+            print("\n  [MONITOR] Trigger → UNKNOWN")
             return True, generated_text
         if "\n\n" in chunk:
+            logger.info("[MONITOR] Trigger: paragraph completed")
+            print("\n  [MONITOR] Trigger → \\n\\n paragraph end")
             return True, generated_text
         return False, None
 
@@ -138,12 +142,12 @@ class MedicalMonitor(VerifyMonitor):
         passed, feedback = self._call_verifier(chunk)
 
         if passed:
-            logger.debug("[MedicalMonitor.verify] PASS at token_index=%d", token_index)
+            logger.debug("[MONITOR] PASS at token_index=%d", token_index)
             return
 
-        logger.info("[MedicalMonitor.verify] FAIL at token_index=%d: %s", token_index, feedback)
+        logger.info("[MONITOR] FAIL at token_index=%d — injecting feedback", token_index)
+        print(f"\n  [MONITOR] FAIL — preparing feedback injection")
 
-        # No max_corrections check — interwhen's 50-call ceiling handles stopping.
         feedback_text    = feedback or "The verifier rejected this reasoning. Please reconsider."
         wrapped_feedback = (
             f"\n\n[FEEDBACK]\n"
@@ -151,6 +155,11 @@ class MedicalMonitor(VerifyMonitor):
             f"Re-evaluate your option selection. Your final answer may need to change.\n"
             f"[/FEEDBACK]\n\n"
         )
+
+        logger.info("[MONITOR] Feedback injected:\n%s", wrapped_feedback)
+        print(f"  [MONITOR] Feedback:\n{'─'*60}")
+        print(wrapped_feedback.strip())
+        print('─'*60)
 
         if not event.is_set():
             event_info.update({
@@ -167,4 +176,7 @@ class MedicalMonitor(VerifyMonitor):
     async def fix(self, generated_text, event_info, fix_method=None):
         text_so_far = event_info.get("generated_text", generated_text)
         feedback    = event_info.get("feedback", "")
+        fb_count    = text_so_far.count("[FEEDBACK]") + (1 if "[FEEDBACK]" in feedback else 0)
+        logger.info("[MONITOR] fix() — solver continuing (correction #%d)", fb_count)
+        print(f"\n  [MONITOR] Solver continuing — correction #{fb_count}")
         return text_so_far + feedback

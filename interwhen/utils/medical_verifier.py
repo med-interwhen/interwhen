@@ -5,6 +5,7 @@ medical_verifier.py
 from __future__ import annotations
 
 import json
+import logging
 import os
 import re
 import time
@@ -15,6 +16,8 @@ import requests
 from dotenv import load_dotenv
 
 from .medical_reasoning_prompts import MedicalReasoningPromptBuilder
+
+logger = logging.getLogger(__name__)
 
 
 # ══════════════════════════════════════════════════════════════════════════════
@@ -307,6 +310,10 @@ class MedicalReasoningVerifier:
         limit = self.config.max_prior_context_chars
         return prior if len(prior) <= limit else "[...earlier context truncated...]\n" + prior[-limit:]
 
+    @staticmethod
+    def _options_text(options: dict) -> str:
+        return "\n".join(f"{k}. {v}" for k, v in options.items()) if options else ""
+
     # ── knowledge question detection ─────────────────────────────────────────
 
     def _is_knowledge_question(self) -> bool:
@@ -337,8 +344,13 @@ class MedicalReasoningVerifier:
             if term not in self.snomed_cache:
                 result = self.snomed.enrich(question=question, option_text=term)
                 if result.get("found"):
-                    self.snomed_cache[term] = result.get("definition", "")
-                    print(f"  [SNOMED realtime] '{term}'")
+                    defn = result.get("definition", "")
+                    self.snomed_cache[term] = defn
+                    logger.info("[SNOMED] '%s' → %s", term, defn[:120])
+                    print(f"  [SNOMED realtime] '{term}' → {defn[:80]}")
+                else:
+                    logger.info("[SNOMED] '%s' → NOT FOUND", term)
+                    print(f"  [SNOMED realtime] '{term}' → NOT FOUND")
                 time.sleep(self.config.snomed_rate_limit_sleep)
 
     def _fetch_snomed_for_claim(self, claim):
@@ -360,11 +372,16 @@ class MedicalReasoningVerifier:
     # ── classify ─────────────────────────────────────────────────────────────
 
     def _classify(self, paragraph):
+        logger.info("[VERIFIER] Classifying (%d chars): %s...", len(paragraph), paragraph[:60])
         prompt = MedicalReasoningPromptBuilder.build_paragraph_classifier_prompt(
             paragraph=paragraph
         )
-        resp = self.vllm.call(prompt)
-        return str(resp.get("class", "OTHER")).upper()
+        resp   = self.vllm.call(prompt)
+        result = str(resp.get("class", "OTHER")).upper()
+        reason = resp.get("reason", "")
+        logger.info("[VERIFIER] Classification → %s | %s", result, reason)
+        print(f"  [VERIFIER] Paragraph type: {result} | {reason}")
+        return result
 
     # ── build verification prompt ─────────────────────────────────────────────
 
@@ -391,9 +408,11 @@ class MedicalReasoningVerifier:
     def _verify_observation(self, paragraph):
         """Grounding check — skip entirely for knowledge MCQs with no vignette."""
         if self._is_knowledge_question() or not self.compact_case.strip():
-            # No clinical vignette to ground against — pass through
+            logger.info("[VERIFIER] OBSERVATION → SKIP (knowledge MCQ, no vignette)")
+            print("  [VERIFIER] OBSERVATION: skipped (no clinical vignette)")
             return True, None
 
+        logger.info("[VERIFIER] OBSERVATION grounding check...")
         prompt   = MedicalReasoningPromptBuilder.build_observation_grounding_prompt(
             compact_case=self.compact_case, paragraph=paragraph,
         )
@@ -401,6 +420,8 @@ class MedicalReasoningVerifier:
         grounded = resp.get("grounded", True)
 
         if grounded:
+            logger.info("[VERIFIER] OBSERVATION → PASS (all facts grounded)")
+            print("  [VERIFIER] OBSERVATION: PASS")
             for line in paragraph.strip().splitlines():
                 line = line.strip().lstrip("-•0123456789. ")
                 if len(line) > 5:
@@ -412,29 +433,60 @@ class MedicalReasoningVerifier:
             f"{iss.get('type','error')}: '{iss.get('claim','')}' — {iss.get('reason','')}"
             for iss in issues
         ]
-        return False, "Observation not grounded in case:\n" + "\n".join(f"  - {p}" for p in parts)
+        fb = "Observation not grounded in case:\n" + "\n".join(f"  - {p}" for p in parts)
+        logger.info("[VERIFIER] OBSERVATION → FAIL | %d issues", len(issues))
+        for p in parts:
+            logger.info("[VERIFIER]   Issue: %s", p)
+        print(f"  [VERIFIER] OBSERVATION: FAIL — {len(issues)} issue(s)")
+        return False, fb
 
     def _verify_inference(self, paragraph, prior_context, _retried=False):
+        snomed_count = len(self.snomed_cache)
+        logger.info("[VERIFIER] INFERENCE verify | prior=%d chars | SNOMED cache=%d terms | retried=%s",
+                    len(prior_context), snomed_count, _retried)
+        print(f"  [VERIFIER] INFERENCE: verifying ({len(paragraph)} chars, {snomed_count} SNOMED terms cached)")
+
         prompt = self._build_verify_prompt(prior_context, paragraph, allow_unknown=self.config.allow_unknown)
+        logger.info("[VERIFIER] Prompt sent to verifier LLM (%d chars)", len(prompt))
         resp   = self.vllm.call(prompt)
         label  = str(resp.get("label", "ERROR")).upper()
+        logger.info("[VERIFIER] INFERENCE verdict: %s", label)
+        print(f"  [VERIFIER] INFERENCE verdict: {label}")
 
         if label == "TRUE":
+            evidence = resp.get("evidence", [])
+            for e in evidence:
+                logger.info("[VERIFIER]   Evidence: %s", e)
             if self._pending_revision:
                 self.compact_state.revise_claim(*self._pending_revision)
+                logger.info("[VERIFIER] Pending revision applied: %s", self._pending_revision)
                 self._pending_revision = None
             self.compact_state.add_claim(paragraph.strip()[:100])
+            print(f"  [VERIFIER] INFERENCE: PASS ✓")
             return True, None
 
         if label == "FALSE":
             wrong      = resp.get("wrong_claim")
             correction = resp.get("correction")
+            evidence   = resp.get("evidence", [])
+            logger.info("[VERIFIER] INFERENCE FAIL")
+            logger.info("[VERIFIER]   Wrong claim : %s", wrong)
+            logger.info("[VERIFIER]   Correction  : %s", correction)
+            for e in evidence:
+                logger.info("[VERIFIER]   Evidence   : %s", e)
+            print(f"  [VERIFIER] INFERENCE: FAIL ✗")
+            print(f"    Wrong   : {wrong}")
+            print(f"    Fix     : {correction}")
             if wrong:
                 self._pending_revision = (wrong, correction or "")
             snomed_block = self._fetch_snomed_for_claim(wrong)
-            return False, self._format_feedback(resp, snomed_block=snomed_block)
+            fb = self._format_feedback(resp, snomed_block=snomed_block)
+            logger.info("[VERIFIER] Feedback generated (%d chars):\n%s", len(fb), fb)
+            return False, fb
 
         if label == "UNKNOWN" and not _retried:
+            logger.info("[VERIFIER] INFERENCE UNKNOWN — fetching SNOMED for paragraph terms")
+            print("  [VERIFIER] INFERENCE: UNKNOWN — fetching SNOMED...")
             if self.snomed and self.config.run_snomed:
                 terms_resp = self.vllm.call(
                     MedicalReasoningPromptBuilder.build_snomed_term_extraction_prompt(
@@ -442,31 +494,47 @@ class MedicalReasoningVerifier:
                     )
                 )
                 terms = terms_resp.get("terms", [])[:3]
+                logger.info("[VERIFIER] UNKNOWN terms extracted: %s", terms)
                 if isinstance(terms, list) and terms:
                     self._realtime_snomed(terms)
                     return self._verify_inference(paragraph, prior_context, _retried=True)
 
             if self.config.unknown_defaults_to_pass:
+                logger.info("[VERIFIER] INFERENCE UNKNOWN → default PASS")
+                print("  [VERIFIER] INFERENCE: UNKNOWN → PASS (default)")
                 return True, None
-            return False, self._format_feedback(resp, prefix="Unresolved uncertainty: ")
+            fb = self._format_feedback(resp, prefix="Unresolved uncertainty: ")
+            return False, fb
 
         # UNKNOWN after retry or unexpected label
         if self.config.unknown_defaults_to_pass:
+            logger.info("[VERIFIER] INFERENCE %s after retry → PASS (default)", label)
             return True, None
-        return False, self._format_feedback(resp, prefix="Unresolved uncertainty: ")
+        fb = self._format_feedback(resp, prefix="Unresolved uncertainty: ")
+        return False, fb
 
     def _verify_conclusion(self, paragraph, prior_context):
+        logger.info("[VERIFIER] CONCLUSION verify | prior=%d chars", len(prior_context))
+        print(f"  [VERIFIER] CONCLUSION: verifying ({len(paragraph)} chars)")
         prompt = self._build_verify_prompt(prior_context, paragraph, allow_unknown=False)
         resp   = self.vllm.call(prompt)
         label  = str(resp.get("label", "ERROR")).upper()
+        logger.info("[VERIFIER] CONCLUSION verdict: %s", label)
+        print(f"  [VERIFIER] CONCLUSION verdict: {label}")
 
         if label == "TRUE":
             self.compact_state.working_conclusion = paragraph.strip()[:100]
+            print("  [VERIFIER] CONCLUSION: PASS ✓")
             return True, None
         if label == "FALSE":
             wrong        = resp.get("wrong_claim")
+            logger.info("[VERIFIER] CONCLUSION FAIL | wrong_claim: %s", wrong)
+            print(f"  [VERIFIER] CONCLUSION: FAIL ✗ | wrong: {wrong}")
             snomed_block = self._fetch_snomed_for_claim(wrong)
-            return False, self._format_feedback(resp, snomed_block=snomed_block)
+            fb = self._format_feedback(resp, snomed_block=snomed_block)
+            logger.info("[VERIFIER] Feedback:\n%s", fb)
+            return False, fb
+        logger.info("[VERIFIER] CONCLUSION %s → PASS (default)", label)
         return True, None
 
     # ── feedback formatting ───────────────────────────────────────────────────
@@ -511,7 +579,15 @@ class MedicalReasoningVerifier:
         prior_context, new_paragraph = self._split_latest(text)
 
         if not new_paragraph.strip():
+            logger.debug("[VERIFIER] verify_trace: empty new paragraph, skipping")
             return True, None
+
+        logger.info("[VERIFIER] ──────────────────────────────────────────────")
+        logger.info("[VERIFIER] New paragraph (%d chars): %s...", len(new_paragraph), new_paragraph[:80])
+        logger.info("[VERIFIER] Prior context: %d chars | CompactState: %s",
+                    len(prior_context), self.compact_state.to_str()[:100])
+        print(f"\n  [VERIFIER] >>> Verifying paragraph ({len(new_paragraph)} chars)")
+        print(f"  [VERIFIER]     Preview: {new_paragraph[:80]!r}")
 
         para_type = self._classify(new_paragraph)
 
@@ -522,7 +598,15 @@ class MedicalReasoningVerifier:
         elif para_type == "CONCLUSION":
             passed, fb = self._verify_conclusion(new_paragraph, prior_context)
         else:
+            logger.info("[VERIFIER] Type %s → SKIP", para_type)
+            print(f"  [VERIFIER] Type {para_type}: skipped")
             return True, None
+
+        result_str = "PASS ✓" if passed else "FAIL ✗"
+        logger.info("[VERIFIER] <<< Result: %s", result_str)
+        print(f"  [VERIFIER] <<< Result: {result_str}")
+        if not passed and fb:
+            logger.info("[VERIFIER] Feedback to inject:\n%s", fb)
 
         self._log(para_type, "PASS" if passed else "FAIL", new_paragraph, fb)
         return passed, fb
