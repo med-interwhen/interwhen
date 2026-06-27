@@ -105,9 +105,10 @@ class MedicalMonitor(VerifyMonitor):
     # ── internal helpers ──────────────────────────────────────────────────────
 
     def _is_in_think_block(self, generated_text: str) -> bool:
-        last_open  = generated_text.rfind(self.think_open_tag)
-        last_close = generated_text.rfind(self.think_close_tag)
-        return last_open != -1 and last_open > last_close
+        # vLLM strips the opening <think> tag from the SSE stream for Qwen3
+        # thinking models, so rfind('<think>') always returns -1.
+        # Infer instead: if </think> has not appeared yet, we are still inside.
+        return self.think_close_tag not in generated_text
 
     def _count_feedback_blocks(self, text: str) -> int:
         return text.count("[FEEDBACK]")
@@ -177,7 +178,12 @@ class MedicalMonitor(VerifyMonitor):
             return
 
         feedback_text    = feedback or "The verifier rejected this reasoning. Please reconsider."
-        wrapped_feedback = f"\n\n[FEEDBACK]\n{feedback_text}\n[/FEEDBACK]\n\n"
+        wrapped_feedback = (
+            f"\n\n[FEEDBACK]\n"
+            f"{feedback_text}\n\n"
+            f"Re-evaluate your option selection. Your final answer may need to change.\n"
+            f"[/FEEDBACK]\n\n"
+        )
 
         if not event.is_set():
             event_info.update({
