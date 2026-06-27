@@ -288,12 +288,14 @@ class MedicalPreprocessor:
         )
         resp  = self.vllm.call(prompt)
         terms = resp.get("terms", [])
-        if not isinstance(terms, list):
-            terms = []
+        if not isinstance(terms, list) or not terms:
+            # Term extraction failed or returned empty — fall back to option texts directly
+            print("  [Preprocessor] Term extraction empty, using option texts as terms")
+            terms = list(options.values())
         terms = terms[:8]  # cap prefetch at 8 terms
 
         print(f"  [Preprocessor] Pre-fetching SNOMED for {len(terms)} terms: {terms}")
-        cache = self.snomed.prefetch(terms, question=question, sleep=self.snomed.top_k * 0.0 + 0.3)
+        cache = self.snomed.prefetch(terms, question=question, sleep=0.3)
         print(f"  [Preprocessor] Cached {len(cache)} definitions.")
         return cache
 
@@ -334,6 +336,7 @@ class MedicalReasoningVerifier:
         self.snomed_cache  = snomed_cache or {}
         self.compact_state = CompactState()
         self.decision_log: List[dict] = []
+        self._pending_revision: Optional[Tuple[str, str]] = None
 
     # ── Text splitting ─────────────────────────────────────────────────────────
 
@@ -455,15 +458,37 @@ class MedicalReasoningVerifier:
         label = str(resp.get("label", "ERROR")).upper()
 
         if label == "TRUE":
+            # Apply any pending revision now that the model has confirmed the correction
+            if self._pending_revision:
+                self.compact_state.revise_claim(*self._pending_revision)
+                self._pending_revision = None
             self.compact_state.add_claim(paragraph.strip()[:100])
             return True, None
 
         if label == "FALSE":
             wrong      = resp.get("wrong_claim")
             correction = resp.get("correction")
+
+            # Store revision — apply only after model confirms it on next PASS
             if wrong:
-                self.compact_state.revise_claim(wrong, correction or "")
-            return False, self._format_feedback(resp)
+                self._pending_revision = (wrong, correction or "")
+
+            # Fetch SNOMED for the wrong claim to ground the correction
+            snomed_block = None
+            if self.snomed and self.config.run_snomed and wrong:
+                terms_resp = self.vllm.call(
+                    MedicalReasoningPromptBuilder.build_snomed_term_extraction_prompt(
+                        question       = question,
+                        options_text   = opts_text,
+                        reasoning_chunk= wrong,
+                    )
+                )
+                terms = terms_resp.get("terms", [])[:3]
+                if terms:
+                    self._realtime_snomed(terms, question)
+                    snomed_block = self._build_snomed_block()
+
+            return False, self._format_feedback(resp, snomed_block=snomed_block)
 
         if label == "UNKNOWN" and not _retried:
             if self.snomed is not None and self.config.run_snomed:
@@ -514,7 +539,21 @@ class MedicalReasoningVerifier:
             self.compact_state.working_conclusion = paragraph.strip()[:100]
             return True, None
         if label == "FALSE":
-            return False, self._format_feedback(resp)
+            wrong = resp.get("wrong_claim")
+            snomed_block = None
+            if self.snomed and self.config.run_snomed and wrong:
+                terms_resp = self.vllm.call(
+                    MedicalReasoningPromptBuilder.build_snomed_term_extraction_prompt(
+                        question       = question,
+                        options_text   = opts_text,
+                        reasoning_chunk= wrong,
+                    )
+                )
+                terms = terms_resp.get("terms", [])[:3]
+                if terms:
+                    self._realtime_snomed(terms, question)
+                    snomed_block = self._build_snomed_block()
+            return False, self._format_feedback(resp, snomed_block=snomed_block)
         return True, None
 
     # ── Feedback formatting ────────────────────────────────────────────────────
