@@ -19,35 +19,17 @@ from .medical_verifier import (
 
 @dataclass
 class SnomedFirstConfig(VerifierConfig):
-    max_terms: int = 5   # max terms extracted per inference paragraph for real-time lookup
+    max_terms: int = 5
 
 
 class MedicalReasoningVerifierSnomedFirst(MedicalReasoningVerifier):
     """
     Extends MedicalReasoningVerifier with per-paragraph real-time SNOMED enrichment.
-
-    The base class uses the SNOMED cache pre-fetched by MedicalPreprocessor
-    (option terms, fetched before generation). This subclass additionally
-    extracts clinical terms from each INFERENCE/CONCLUSION paragraph as it
-    arrives and fetches SNOMED definitions for any terms not already cached.
-
-    Result: the cache grows richer throughout generation. By the time a
-    conclusion is reached, both the pre-known option concepts and any
-    paragraph-specific concepts encountered during reasoning are available.
-
-    Only _verify_inference and _verify_conclusion are overridden — all
-    observation grounding, state management, splitting, and feedback
-    formatting are inherited unchanged.
+    Extracts terms from the paragraph being verified and fetches SNOMED definitions
+    before every inference/conclusion verification call.
     """
 
-    def __init__(
-        self,
-        vllm:         LocalVLLMClient,
-        snomed:       Optional[SnomedClient]           = None,
-        config:       Optional[SnomedFirstConfig]      = None,
-        compact_case: str                              = "",
-        snomed_cache: Optional[Dict[str, str]]         = None,
-    ):
+    def __init__(self, vllm, snomed=None, config=None, compact_case="", snomed_cache=None):
         super().__init__(
             vllm         = vllm,
             snomed       = snomed,
@@ -56,24 +38,15 @@ class MedicalReasoningVerifierSnomedFirst(MedicalReasoningVerifier):
             snomed_cache = snomed_cache or {},
         )
 
-    def _enrich_for_paragraph(
-        self,
-        paragraph: str,
-        question:  str,
-        options:   dict,
-    ) -> None:
-        """
-        Extract clinical terms specific to this paragraph and fetch SNOMED
-        for any not already in the cache. Updates self.snomed_cache in-place.
-        """
+    def _enrich_for_paragraph(self, paragraph: str) -> None:
+        """Extract clinical terms from paragraph and fetch SNOMED for uncached ones."""
         if self.snomed is None:
             return
 
-        opts_text  = self._options_text(options)
         terms_resp = self.vllm.call(
             MedicalReasoningPromptBuilder.build_snomed_term_extraction_prompt(
-                question       = question,
-                options_text   = opts_text,
+                question       = "",
+                options_text   = "",
                 reasoning_chunk= paragraph,
             )
         )
@@ -87,27 +60,13 @@ class MedicalReasoningVerifierSnomedFirst(MedicalReasoningVerifier):
         ][: self.config.max_terms]
 
         if new_terms:
-            self._realtime_snomed(new_terms, question)
+            self._realtime_snomed(new_terms)
 
-    def _verify_inference(
-        self,
-        paragraph: str,
-        options:   dict,
-        question:  str  = "",
-        _retried:  bool = False,
-    ) -> Tuple[bool, Optional[str]]:
-        """Enrich SNOMED cache for this paragraph, then run base inference verification."""
+    def _verify_inference(self, paragraph, prior_context, _retried=False):
         if not _retried:
-            # Only enrich on the first attempt — cache is populated for the retry
-            self._enrich_for_paragraph(paragraph, question, options)
-        return super()._verify_inference(paragraph, options, question, _retried=_retried)
+            self._enrich_for_paragraph(paragraph)
+        return super()._verify_inference(paragraph, prior_context, _retried=_retried)
 
-    def _verify_conclusion(
-        self,
-        paragraph: str,
-        options:   dict,
-        question:  str = "",
-    ) -> Tuple[bool, Optional[str]]:
-        """Enrich SNOMED cache for this paragraph, then run base conclusion verification."""
-        self._enrich_for_paragraph(paragraph, question, options)
-        return super()._verify_conclusion(paragraph, options, question)
+    def _verify_conclusion(self, paragraph, prior_context):
+        self._enrich_for_paragraph(paragraph)
+        return super()._verify_conclusion(paragraph, prior_context)

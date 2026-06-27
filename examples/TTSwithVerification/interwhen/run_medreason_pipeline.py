@@ -7,6 +7,7 @@ from __future__ import annotations
 import argparse
 import asyncio
 import json
+import logging
 import os
 import re
 from datetime import datetime
@@ -20,7 +21,7 @@ from interwhen import stream_completion
 from interwhen.monitors.medical_monitor import MedicalMonitor
 from interwhen.utils.medical_prompts import SYSTEM_PROMPT_MEDICAL, USER_PROMPT_TEMPLATE
 
-# Module-level tokenizer, set in __main__ (multiprocessing-safe).
+logger   = logging.getLogger(__name__)
 tokenizer = None
 
 
@@ -29,25 +30,21 @@ tokenizer = None
 # ══════════════════════════════════════════════════════════════════════════════
 
 class MedReasonLoader:
-    """Loads UCSC-VLAA/MedReason into {id, question, options, answer, reasoning} dicts."""
-
     HF_PATH = "UCSC-VLAA/MedReason"
     _OPT_RE = re.compile(r"([A-E])\.\s*(.*?)(?=\n[A-E]\.|$)", re.DOTALL)
 
-    def load(self, split: str, start_idx: int, end_idx: int, max_samples: int) -> list:
+    def load(self, split, start_idx, end_idx, max_samples):
         print(f"Loading {self.HF_PATH}  split={split} ...")
         raw = load_dataset(self.HF_PATH, split=split)
-
         end = min(end_idx, len(raw)) if end_idx > 0 else len(raw)
         raw = raw.select(range(start_idx, end))
         if max_samples > 0:
             raw = raw.select(range(min(max_samples, len(raw))))
-
         rows = [self._normalise(i, item) for i, item in enumerate(raw)]
         print(f"  -> {len(rows)} samples ready.\n")
         return rows
 
-    def _normalise(self, idx: int, item: dict) -> dict:
+    def _normalise(self, idx, item):
         options = {k: v.strip() for k, v in self._OPT_RE.findall(str(item.get("options", "")))}
         raw_ans = str(item.get("answer", "")).split("Explanation:")[0].strip().rstrip(". ")
         return {
@@ -59,7 +56,7 @@ class MedReasonLoader:
         }
 
     @staticmethod
-    def _match_answer(clean: str, options: dict) -> str:
+    def _match_answer(clean, options):
         cl = clean.lower()
         for letter, text in options.items():
             if cl == text.lower() or cl in text.lower() or text.lower() in cl:
@@ -77,8 +74,7 @@ class MedReasonLoader:
 # SOLVER PROMPT
 # ══════════════════════════════════════════════════════════════════════════════
 
-def init_llm_server(model_name: str, max_tokens: int = 16 * 1024, port: int = 8000) -> dict:
-    """Solver vLLM server config."""
+def init_llm_server(model_name, max_tokens=16 * 1024, port=8000):
     return {
         "url": f"http://localhost:{port}/v1/completions",
         "payload": {
@@ -91,10 +87,12 @@ def init_llm_server(model_name: str, max_tokens: int = 16 * 1024, port: int = 80
     }
 
 
-def build_prompt(sample: dict, tok) -> str:
+def build_prompt(sample, tok):
     case_text = sample["question"]
     if sample["options"]:
-        case_text += "\n\nOptions:\n" + "\n".join(f"{k}. {v}" for k, v in sample["options"].items())
+        case_text += "\n\nOptions:\n" + "\n".join(
+            f"{k}. {v}" for k, v in sample["options"].items()
+        )
     user_prompt = USER_PROMPT_TEMPLATE.format(case_text=case_text)
     return tok.apply_chat_template(
         [{"role": "system", "content": SYSTEM_PROMPT_MEDICAL},
@@ -107,11 +105,7 @@ def build_prompt(sample: dict, tok) -> str:
 # SCORING
 # ══════════════════════════════════════════════════════════════════════════════
 
-def exact_correctness_check(output_text: str, sample: dict) -> "bool | None":
-    """
-    Primary scorer: extract 'Selected Option: X' from [FINAL ANSWER] block.
-    Returns None if the block is absent or malformed.
-    """
+def exact_correctness_check(output_text, sample):
     m = re.search(r"\[FINAL ANSWER\](.*?)\[/FINAL ANSWER\]", output_text, re.DOTALL)
     if not m:
         return None
@@ -122,11 +116,7 @@ def exact_correctness_check(output_text: str, sample: dict) -> "bool | None":
     return opt.group(1).strip().upper() == sample["answer"].strip().upper()
 
 
-def rough_correctness_check(output_text: str, sample: dict) -> "bool | None":
-    """
-    Fallback scorer (word-overlap) when [FINAL ANSWER] block is absent.
-    Not authoritative — use only as a fallback signal.
-    """
+def rough_correctness_check(output_text, sample):
     m     = re.search(r"\[FINAL ANSWER\](.*?)\[/FINAL ANSWER\]", output_text, re.DOTALL)
     block = (m.group(1) if m else output_text[-600:]).lower()
     gt    = sample["options"].get(sample["answer"], "").lower()
@@ -137,8 +127,7 @@ def rough_correctness_check(output_text: str, sample: dict) -> "bool | None":
     return overlap >= max(1, len(gt_words) // 2)
 
 
-def check_correctness(output_text: str, sample: dict) -> "bool | None":
-    """Try exact match first; fall back to word overlap."""
+def check_correctness(output_text, sample):
     result = exact_correctness_check(output_text, sample)
     if result is not None:
         return result
@@ -149,7 +138,7 @@ def check_correctness(output_text: str, sample: dict) -> "bool | None":
 # PER-SAMPLE RUN
 # ══════════════════════════════════════════════════════════════════════════════
 
-def run(args, sample: dict) -> dict:
+def run(args, sample):
     global tokenizer
     llm_server = init_llm_server(args.solver_lm, port=args.port)
     prompt     = build_prompt(sample, tokenizer)
@@ -159,31 +148,39 @@ def run(args, sample: dict) -> dict:
         monitors = [MedicalMonitor(
             name             = "MedicalVerifier",
             instance         = sample,
-            max_corrections  = args.monitor_max_corrections,
             verifier_port    = args.verifier_port,
             verifier_model   = args.verifier_model,
             run_snomed       = not args.no_snomed,
+            preprocess_case  = args.preprocess_case,
+            prefetch_snomed  = args.prefetch_snomed,
         )]
 
-    output_text = asyncio.run(stream_completion(
-        prompt,
-        llm_server     = llm_server,
-        monitors       = tuple(monitors),
-        async_execution= not args.debug,
-    ))
+    output_text  = ""
+    decision_log = []
+    try:
+        output_text = asyncio.run(stream_completion(
+            prompt,
+            llm_server     = llm_server,
+            monitors       = tuple(monitors),
+            async_execution= not args.debug,
+        ))
+        if monitors:
+            decision_log = monitors[0].verifier.decision_log
+    except Exception as e:
+        logger.warning("stream_completion failed for sample %s: %s", sample["id"], e)
+        output_text = output_text or ""   # keep whatever was generated
 
-    correct        = check_correctness(output_text, sample)
-    exact_matched  = exact_correctness_check(output_text, sample)
-    decision_log   = monitors[0].verifier.decision_log if monitors else []
+    correct       = check_correctness(output_text, sample)
+    exact_matched = exact_correctness_check(output_text, sample)
 
     result = {
-        "sample_id":       sample["id"],
-        "question":        sample["question"],
-        "ground_truth":    sample["answer"],
-        "output_text":     output_text,
-        "correct":         correct,
-        "exact_matched":   exact_matched is not None,  # whether [FINAL ANSWER] block was found
-        "decision_log":    decision_log,
+        "sample_id":     sample["id"],
+        "question":      sample["question"],
+        "ground_truth":  sample["answer"],
+        "output_text":   output_text,
+        "correct":       correct,
+        "exact_matched": exact_matched is not None,
+        "decision_log":  decision_log,
     }
     with open(f"{args.output_dir}/outputs.jsonl", "a") as f:
         f.write(json.dumps(result, default=str) + "\n")
@@ -201,21 +198,28 @@ def _run_wrapper(args_sample):
 def parse_args():
     ap = argparse.ArgumentParser()
 
-    ap.add_argument("--solver_lm",              type=str,  required=True)
-    ap.add_argument("--port",                   type=int,  default=8000)
-    ap.add_argument("--monitor",   "-m",        action="store_true")
-    ap.add_argument("--verifier_port",          type=int,  default=8001)
-    ap.add_argument("--verifier_model",         type=str,  default="medverifier")
-    ap.add_argument("--monitor_max_corrections",type=int,  default=5)
-    ap.add_argument("--no_snomed",              action="store_true")
-    ap.add_argument("--split",                  type=str,  default="train")
-    ap.add_argument("--max_samples",            type=int,  default=20)
-    ap.add_argument("--start_idx",              type=int,  default=0)
-    ap.add_argument("--end_idx",                type=int,  default=-1)
-    ap.add_argument("--n_processes", "-p",      type=int,  default=8)
-    ap.add_argument("--debug",       "-d",      action="store_true")
-    ap.add_argument("--continue_from", "-c",    type=str,  default=None)
-    ap.add_argument("--extra",                  type=str,  default="")
+    ap.add_argument("--solver_lm",       type=str,  required=True)
+    ap.add_argument("--port",            type=int,  default=8000)
+
+    ap.add_argument("--monitor",  "-m",  action="store_true")
+    ap.add_argument("--verifier_port",   type=int,  default=8001)
+    ap.add_argument("--verifier_model",  type=str,  default="medverifier")
+    ap.add_argument("--no_snomed",       action="store_true")
+
+    # Preprocessing — both off by default for cost efficiency
+    ap.add_argument("--preprocess_case",  action="store_true",
+                    help="Run case extraction LLM call before generation (adds 1 verifier call/sample)")
+    ap.add_argument("--prefetch_snomed",  action="store_true",
+                    help="Batch fetch SNOMED for option terms before generation")
+
+    ap.add_argument("--split",           type=str,  default="train")
+    ap.add_argument("--max_samples",     type=int,  default=20)
+    ap.add_argument("--start_idx",       type=int,  default=0)
+    ap.add_argument("--end_idx",         type=int,  default=-1)
+    ap.add_argument("--n_processes","-p",type=int,  default=8)
+    ap.add_argument("--debug",     "-d", action="store_true")
+    ap.add_argument("--continue_from","-c", type=str, default=None)
+    ap.add_argument("--extra",           type=str,  default="")
 
     return ap.parse_args()
 
@@ -223,6 +227,8 @@ def parse_args():
 def main():
     global tokenizer
     args = parse_args()
+
+    logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
 
     tokenizer = AutoTokenizer.from_pretrained(args.solver_lm)
     samples   = MedReasonLoader().load(args.split, args.start_idx, args.end_idx, args.max_samples)
@@ -266,4 +272,3 @@ def main():
 
 if __name__ == "__main__":
     main()
-    
