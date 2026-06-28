@@ -46,13 +46,12 @@ class MedicalMonitor(VerifyMonitor):
         self,
         name:                str,
         instance:            Dict[str, Any],
-        line_interval:       int   = 5,       # kept for interface parity
+        line_interval:       int   = 15,      # trigger every N non-empty lines
         max_corrections:     int   = 10,
-        paragraph_interval:  int   = 1,       # trigger every N paragraphs
         verification_window: int   = 3,       # paragraphs per verification call
         verifier_port:       int   = 8001,
         verifier_model:      str   = "medverifier",
-        evidence_source:     str   = "pubmed",  # "pubmed"|"snomed"|"both"|"none"
+        evidence_source:     str   = "pubmed",
         run_snomed:          bool  = True,
         preprocess_case:     bool  = False,
         prefetch_snomed:     bool  = False,
@@ -64,13 +63,13 @@ class MedicalMonitor(VerifyMonitor):
 
         self.instance            = instance
         self.max_corrections     = max_corrections
-        self.paragraph_interval  = paragraph_interval
+        self.line_interval       = line_interval
         self.think_open_tag      = think_open_tag
         self.think_close_tag     = think_close_tag
 
-        # paragraph trigger counter
-        self._para_count         = 0
-        self._last_para_trigger  = 0
+        # line trigger counter — non-empty lines seen since last trigger
+        self._line_count         = 0
+        self._last_trigger_line  = 0
 
         # ── verifier LLM ──────────────────────────────────────────────────────
         self.vllm_client = LocalVLLMClient(
@@ -153,16 +152,18 @@ class MedicalMonitor(VerifyMonitor):
         if "UNKNOWN" in chunk:
             logger.info("[MONITOR] Trigger: UNKNOWN")
             print("\n  [MONITOR] Trigger → UNKNOWN")
-            self._last_para_trigger = self._para_count
+            self._last_trigger_line = self._line_count
             return True, generated_text
 
-        if "\n\n" in chunk:
-            self._para_count += 1
-            since = self._para_count - self._last_para_trigger
-            if since >= self.paragraph_interval:
-                logger.info("[MONITOR] Trigger: %d paragraphs accumulated", since)
-                print(f"\n  [MONITOR] Trigger → {since} paragraph(s) completed")
-                self._last_para_trigger = self._para_count
+        if "\n" in chunk:
+            # Count non-empty lines arriving in this chunk
+            new_lines = sum(1 for l in chunk.split("\n") if l.strip())
+            self._line_count += new_lines
+            since = self._line_count - self._last_trigger_line
+            if since >= self.line_interval:
+                logger.info("[MONITOR] Trigger: %d non-empty lines accumulated", since)
+                print(f"\n  [MONITOR] Trigger → {since} lines")
+                self._last_trigger_line = self._line_count
                 return True, generated_text
 
         return False, None
