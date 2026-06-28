@@ -1,5 +1,19 @@
 """
-run_medreason_pipeline.py
+run_medreason_pipeline.py — confidence-gated version
+
+Changes vs original
+-------------------
+* --conf_threshold CLI arg (default 0.75) — passed to MedicalMonitor.
+* --no_confidence_gate flag — disables the gate (reverts to original behaviour
+  for ablation: verify every paragraph).
+* Stream runner feeds vLLM logprob payloads into monitor.push_logprob_chunk()
+  so the confidence scorer can use real token probabilities when available.
+* Accuracy reporting now also prints gate stats from the decision_log:
+    - total paragraphs triggered
+    - paragraphs skipped by gate
+    - paragraphs verified
+    - verifier FAIL rate (among verified)
+  This lets you tune conf_threshold without re-running everything.
 """
 
 from __future__ import annotations
@@ -21,12 +35,12 @@ from interwhen import stream_completion
 from interwhen.monitors.medical_monitor import MedicalMonitor
 from interwhen.utils.medical_prompts import SYSTEM_PROMPT_MEDICAL, USER_PROMPT_TEMPLATE
 
-logger   = logging.getLogger(__name__)
+logger    = logging.getLogger(__name__)
 tokenizer = None
 
 
 # ══════════════════════════════════════════════════════════════════════════════
-# MEDREASON LOADING
+# MEDREASON LOADING  (unchanged)
 # ══════════════════════════════════════════════════════════════════════════════
 
 class MedReasonLoader:
@@ -71,7 +85,7 @@ class MedReasonLoader:
 
 
 # ══════════════════════════════════════════════════════════════════════════════
-# SOLVER PROMPT
+# LLM SERVER  (unchanged)
 # ══════════════════════════════════════════════════════════════════════════════
 
 def init_llm_server(model_name, max_tokens=16 * 1024, port=8000):
@@ -102,7 +116,7 @@ def build_prompt(sample, tok):
 
 
 # ══════════════════════════════════════════════════════════════════════════════
-# SCORING
+# SCORING  (unchanged)
 # ══════════════════════════════════════════════════════════════════════════════
 
 def exact_correctness_check(output_text, sample):
@@ -135,6 +149,60 @@ def check_correctness(output_text, sample):
 
 
 # ══════════════════════════════════════════════════════════════════════════════
+# GATE STATS  (new)
+# ══════════════════════════════════════════════════════════════════════════════
+
+def extract_gate_stats(decision_log: list) -> dict:
+    """
+    Compute per-sample gate statistics from the decision_log.
+
+    Returns a dict with:
+        triggered  — how many paragraph boundaries fired
+        skipped    — skipped by confidence gate (GATED_SKIP)
+        verified   — actually sent to verifier
+        failed     — verifier returned FAIL
+        skip_rate  — skipped / triggered
+        fail_rate  — failed / verified  (0 if verified == 0)
+    """
+    triggered = len(decision_log)
+    skipped   = sum(1 for e in decision_log if e.get("label") == "SKIP")
+    verified  = triggered - skipped
+    failed    = sum(1 for e in decision_log if e.get("label") == "FAIL")
+    return {
+        "triggered": triggered,
+        "skipped":   skipped,
+        "verified":  verified,
+        "failed":    failed,
+        "skip_rate": round(skipped  / triggered, 4) if triggered else 0.0,
+        "fail_rate": round(failed   / verified,  4) if verified  else 0.0,
+    }
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# LOGPROB FEEDING HELPER  (new)
+# ══════════════════════════════════════════════════════════════════════════════
+
+def _make_logprob_callback(monitor: MedicalMonitor):
+    """
+    Returns a callback that can be registered with stream_completion (if your
+    interwhen version supports an on_logprobs hook) to feed logprob data into
+    the confidence scorer.
+
+    If stream_completion does NOT support this hook yet, the callback is still
+    returned but won't be called — the confidence scorer will fall back to the
+    text-heuristic automatically.
+
+    Expected call signature from stream_completion:
+        callback(token_logprob_dicts: list[dict])
+    where each dict has the vLLM logprob format:
+        {"token": str, "logprob": float, "top_logprobs": {str: float}}
+    """
+    def _cb(token_logprob_dicts):
+        monitor.push_logprob_chunk(token_logprob_dicts)
+    return _cb
+
+
+# ══════════════════════════════════════════════════════════════════════════════
 # PER-SAMPLE RUN
 # ══════════════════════════════════════════════════════════════════════════════
 
@@ -145,7 +213,11 @@ def run(args, sample):
 
     monitors = []
     if args.monitor:
-        monitors = [MedicalMonitor(
+        # If --no_confidence_gate is set, use threshold=1.0 so every trigger
+        # fires the verifier (identical to original behaviour for ablation).
+        effective_threshold = 1.0 if args.no_confidence_gate else args.conf_threshold
+
+        monitor = MedicalMonitor(
             name             = "MedicalVerifier",
             instance         = sample,
             verifier_port    = args.verifier_port,
@@ -153,25 +225,47 @@ def run(args, sample):
             run_snomed       = not args.no_snomed,
             preprocess_case  = args.preprocess_case,
             prefetch_snomed  = args.prefetch_snomed,
-        )]
+            conf_threshold   = effective_threshold,
+        )
+        monitors = [monitor]
 
     output_text  = ""
     decision_log = []
     try:
+        # Build optional kwargs for logprob hook — gracefully ignored if
+        # stream_completion doesn't support the on_logprobs kwarg yet.
+        extra_kwargs = {}
+        if monitors:
+            lp_callback = _make_logprob_callback(monitors[0])
+            extra_kwargs["on_logprobs"] = lp_callback  # no-op if unsupported
+
         output_text = asyncio.run(stream_completion(
             prompt,
-            llm_server     = llm_server,
-            monitors       = tuple(monitors),
-            async_execution= not args.debug,
+            llm_server      = llm_server,
+            monitors        = tuple(monitors),
+            async_execution = not args.debug,
+            **extra_kwargs,
+        ))
+        if monitors:
+            decision_log = monitors[0].verifier.decision_log
+    except TypeError:
+        # stream_completion doesn't accept on_logprobs yet — retry without it
+        logger.info("[run] stream_completion doesn't support on_logprobs, retrying without")
+        output_text = asyncio.run(stream_completion(
+            prompt,
+            llm_server      = llm_server,
+            monitors        = tuple(monitors),
+            async_execution = not args.debug,
         ))
         if monitors:
             decision_log = monitors[0].verifier.decision_log
     except Exception as e:
         logger.warning("stream_completion failed for sample %s: %s", sample["id"], e)
-        output_text = output_text or ""   # keep whatever was generated
+        output_text = output_text or ""
 
     correct       = check_correctness(output_text, sample)
     exact_matched = exact_correctness_check(output_text, sample)
+    gate_stats    = extract_gate_stats(decision_log) if decision_log else {}
 
     result = {
         "sample_id":     sample["id"],
@@ -181,6 +275,7 @@ def run(args, sample):
         "correct":       correct,
         "exact_matched": exact_matched is not None,
         "decision_log":  decision_log,
+        "gate_stats":    gate_stats,   # new field
     }
     with open(f"{args.output_dir}/outputs.jsonl", "a") as f:
         f.write(json.dumps(result, default=str) + "\n")
@@ -206,11 +301,28 @@ def parse_args():
     ap.add_argument("--verifier_model",  type=str,  default="medverifier")
     ap.add_argument("--no_snomed",       action="store_true")
 
-    # Preprocessing — both off by default for cost efficiency
-    ap.add_argument("--preprocess_case",  action="store_true",
-                    help="Run case extraction LLM call before generation (adds 1 verifier call/sample)")
-    ap.add_argument("--prefetch_snomed",  action="store_true",
-                    help="Batch fetch SNOMED for option terms before generation")
+    # Preprocessing
+    ap.add_argument("--preprocess_case",  action="store_true")
+    ap.add_argument("--prefetch_snomed",  action="store_true")
+
+    # ── Confidence gate (new) ─────────────────────────────────────────────
+    ap.add_argument(
+        "--conf_threshold", type=float, default=0.65,
+        help=(
+            "Confidence gate threshold. Verifier is called only when "
+            "paragraph confidence < this value. "
+            "Text-heuristic mode (no logprobs): 0.65 skips confident paragraphs, "
+            "verifies hedging/uncertain ones only. "
+            "Logprob mode: raise to 0.80 for tighter gating. "
+            "1.0 = verify everything (original behaviour). "
+            "0.0 = never verify (disabled)."
+        ),
+    )
+    ap.add_argument(
+        "--no_confidence_gate", action="store_true",
+        help="Disable confidence gate (verify every paragraph). Equivalent to --conf_threshold 1.0.",
+    )
+    # ─────────────────────────────────────────────────────────────────────
 
     ap.add_argument("--split",           type=str,  default="train")
     ap.add_argument("--max_samples",     type=int,  default=20)
@@ -223,6 +335,48 @@ def parse_args():
 
     return ap.parse_args()
 
+
+# ══════════════════════════════════════════════════════════════════════════════
+# AGGREGATE GATE STATS REPORTING  (new)
+# ══════════════════════════════════════════════════════════════════════════════
+
+def _print_gate_report(results: list, conf_threshold: float) -> None:
+    total_triggered = sum(r.get("gate_stats", {}).get("triggered", 0) for r in results)
+    total_skipped   = sum(r.get("gate_stats", {}).get("skipped",   0) for r in results)
+    total_verified  = sum(r.get("gate_stats", {}).get("verified",  0) for r in results)
+    total_failed    = sum(r.get("gate_stats", {}).get("failed",    0) for r in results)
+
+    if total_triggered == 0:
+        return
+
+    print(f"\n{'═'*55}")
+    print(f"  CONFIDENCE GATE REPORT  (τ = {conf_threshold})")
+    print(f"{'═'*55}")
+    print(f"  Paragraph boundaries triggered : {total_triggered}")
+    print(f"  Skipped by gate                : {total_skipped}"
+          f"  ({total_skipped/total_triggered:.1%})")
+    print(f"  Sent to verifier               : {total_verified}"
+          f"  ({total_verified/total_triggered:.1%})")
+    if total_verified:
+        print(f"  Verifier FAIL rate             : {total_failed/total_verified:.1%}"
+              f"  ({total_failed} / {total_verified})")
+    print(f"{'═'*55}\n")
+    print("  Tuning guidance:")
+    skip_rate = total_skipped / total_triggered
+    if skip_rate < 0.20:
+        print(f"  → Gate is skipping only {skip_rate:.0%} — consider raising τ to reduce")
+        print("    verifier load (try τ = 0.80 or 0.85).")
+    elif skip_rate > 0.60:
+        print(f"  → Gate is skipping {skip_rate:.0%} — if accuracy dropped, try")
+        print("    lowering τ to 0.65 or 0.70 to let more paragraphs through.")
+    else:
+        print(f"  → Skip rate {skip_rate:.0%} looks healthy. Fine-tune based on accuracy.")
+    print()
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# MAIN
+# ══════════════════════════════════════════════════════════════════════════════
 
 def main():
     global tokenizer
@@ -253,6 +407,12 @@ def main():
     else:
         open(output_file, "w").close()
 
+    if args.monitor and not args.no_confidence_gate:
+        print(f"  Confidence gate ENABLED  (τ = {args.conf_threshold})")
+        print("  Verifier will be called only for low-confidence paragraphs.\n")
+    elif args.monitor and args.no_confidence_gate:
+        print("  Confidence gate DISABLED  (ablation mode — verifying every paragraph)\n")
+
     if not args.debug:
         with Pool(processes=args.n_processes) as pool:
             results = list(tqdm(
@@ -264,9 +424,14 @@ def main():
 
     scored = [r["correct"] for r in results if r.get("correct") is not None]
     exact  = [r["exact_matched"] for r in results]
+
     if scored:
         print(f"\nAccuracy:       {sum(scored)}/{len(scored)} = {sum(scored)/len(scored):.2%}")
         print(f"[FINAL ANSWER] block found in {sum(exact)}/{len(exact)} outputs")
+
+    if args.monitor:
+        _print_gate_report(results, args.conf_threshold)
+
     print(f"Output -> {output_file}")
 
 
