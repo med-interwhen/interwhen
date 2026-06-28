@@ -606,7 +606,7 @@ class MedicalReasoningVerifier:
 
         if label == "FALSE":
             # Confidence gate
-            if confidence < 0.9:
+            if confidence < 0.8:
                 logger.info("[VERIFIER] FALSE ignored — confidence %.2f < 0.9", confidence)
                 print(f"  [VERIFIER] INFERENCE: FALSE ignored (confidence={confidence:.2f} < 0.9)")
                 return True, None
