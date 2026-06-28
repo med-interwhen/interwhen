@@ -79,7 +79,7 @@ class MedicalMonitor(VerifyMonitor):
         name:             str,
         instance:         Dict[str, Any],
         line_interval:    int   = 5,
-        max_corrections:  int   = 50,
+        max_corrections:  int   = 12,
         verifier_port:    int   = 8001,
         verifier_model:   str   = "medverifier",
         run_snomed:       bool  = True,
