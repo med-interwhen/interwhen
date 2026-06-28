@@ -205,6 +205,7 @@ Output format (if incorrect):
 }}
 """
 
+    @classmethod
     def build_reasoning_hypothesis_prompt(
         cls,
         *,
@@ -241,6 +242,7 @@ Allowed Labels:
 Output format (if correct):
 {{
     "label": "TRUE",
+    "confidence": 0.95,
     "evidence": ["reason this is supported"],
     "wrong_claim": null,
     "correction": null
@@ -249,6 +251,7 @@ Output format (if correct):
 Output format (if incorrect):
 {{
     "label": "FALSE",
+    "confidence": 0.92,
     "evidence": ["what is wrong and why"],
     "wrong_claim": "the specific incorrect statement verbatim",
     "correction": "what the correct reasoning should state"
@@ -295,6 +298,7 @@ Hypothesis:
 Output format (if correct):
 {{
     "label": "TRUE",
+    "confidence": 0.95,
     "evidence": ["reason this is supported"],
     "wrong_claim": null,
     "correction": null
@@ -303,6 +307,7 @@ Output format (if correct):
 Output format (if incorrect):
 {{
     "label": "FALSE",
+    "confidence": 0.92,
     "evidence": ["what is wrong and why"],
     "wrong_claim": "the specific incorrect statement verbatim",
     "correction": "what the correct reasoning should state"
