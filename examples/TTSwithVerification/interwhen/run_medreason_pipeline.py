@@ -147,8 +147,8 @@ def run(args, sample):
         monitors = [MedicalMonitor(
             name                 = "MedicalVerifier",
             instance             = sample,
+            line_interval        = args.line_interval,
             max_corrections      = args.max_corrections,
-            paragraph_interval   = args.paragraph_interval,
             verification_window  = args.verification_window,
             verifier_port        = args.verifier_port,
             verifier_model       = args.verifier_model,
@@ -220,8 +220,8 @@ def parse_args():
     # Feedback control
     ap.add_argument("--max_corrections",       type=int, default=10,
                     help="Max feedback blocks per sample before stopping")
-    ap.add_argument("--paragraph_interval",    type=int, default=1,
-                    help="Trigger verification every N paragraphs (default: every paragraph)")
+    ap.add_argument("--line_interval",         type=int, default=15,
+                    help="Trigger verification every N non-empty lines (default: 15)")
     ap.add_argument("--verification_window",   type=int, default=3,
                     help="Number of paragraphs sent per verification call")
 
@@ -277,8 +277,8 @@ def main():
 
     print(f"\nConfig:")
     print(f"  evidence_source:     {args.evidence_source}")
+    print(f"  line_interval:       {args.line_interval}")
     print(f"  max_corrections:     {args.max_corrections}")
-    print(f"  paragraph_interval:  {args.paragraph_interval}")
     print(f"  verification_window: {args.verification_window}")
     print(f"  preprocess_case:     {args.preprocess_case}")
     print(f"  prefetch_snomed:     {args.prefetch_snomed}\n")
