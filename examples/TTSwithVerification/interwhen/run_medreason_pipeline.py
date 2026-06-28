@@ -21,7 +21,7 @@ from interwhen import stream_completion
 from interwhen.monitors.medical_monitor import MedicalMonitor
 from interwhen.utils.medical_prompts import SYSTEM_PROMPT_MEDICAL, USER_PROMPT_TEMPLATE
 
-logger   = logging.getLogger(__name__)
+logger    = logging.getLogger(__name__)
 tokenizer = None
 
 
@@ -123,8 +123,7 @@ def rough_correctness_check(output_text, sample):
     if not gt:
         return None
     gt_words = set(gt.split())
-    overlap  = len(gt_words & set(block.split()))
-    return overlap >= max(1, len(gt_words) // 2)
+    return len(gt_words & set(block.split())) >= max(1, len(gt_words) // 2)
 
 
 def check_correctness(output_text, sample):
@@ -146,13 +145,17 @@ def run(args, sample):
     monitors = []
     if args.monitor:
         monitors = [MedicalMonitor(
-            name             = "MedicalVerifier",
-            instance         = sample,
-            verifier_port    = args.verifier_port,
-            verifier_model   = args.verifier_model,
-            run_snomed       = not args.no_snomed,
-            preprocess_case  = args.preprocess_case,
-            prefetch_snomed  = args.prefetch_snomed,
+            name                 = "MedicalVerifier",
+            instance             = sample,
+            max_corrections      = args.max_corrections,
+            paragraph_interval   = args.paragraph_interval,
+            verification_window  = args.verification_window,
+            verifier_port        = args.verifier_port,
+            verifier_model       = args.verifier_model,
+            evidence_source      = args.evidence_source,
+            run_snomed           = not args.no_snomed,
+            preprocess_case      = args.preprocess_case,
+            prefetch_snomed      = args.prefetch_snomed,
         )]
 
     output_text  = ""
@@ -160,15 +163,14 @@ def run(args, sample):
     try:
         output_text = asyncio.run(stream_completion(
             prompt,
-            llm_server     = llm_server,
-            monitors       = tuple(monitors),
-            async_execution= not args.debug,
+            llm_server      = llm_server,
+            monitors        = tuple(monitors),
+            async_execution = not args.debug,
         ))
         if monitors:
             decision_log = monitors[0].verifier.decision_log
     except Exception as e:
         logger.warning("stream_completion failed for sample %s: %s", sample["id"], e)
-        output_text = output_text or ""   # keep whatever was generated
 
     correct       = check_correctness(output_text, sample)
     exact_matched = exact_correctness_check(output_text, sample)
@@ -198,28 +200,48 @@ def _run_wrapper(args_sample):
 def parse_args():
     ap = argparse.ArgumentParser()
 
-    ap.add_argument("--solver_lm",       type=str,  required=True)
-    ap.add_argument("--port",            type=int,  default=8000)
+    # Solver
+    ap.add_argument("--solver_lm",             type=str, required=True)
+    ap.add_argument("--port",                  type=int, default=8000)
 
-    ap.add_argument("--monitor",  "-m",  action="store_true")
-    ap.add_argument("--verifier_port",   type=int,  default=8001)
-    ap.add_argument("--verifier_model",  type=str,  default="medverifier")
-    ap.add_argument("--no_snomed",       action="store_true")
+    # Monitor / verifier
+    ap.add_argument("--monitor",   "-m",       action="store_true")
+    ap.add_argument("--verifier_port",         type=int, default=8001)
+    ap.add_argument("--verifier_model",        type=str, default="medverifier")
+    ap.add_argument("--no_snomed",             action="store_true")
 
-    # Preprocessing — both off by default for cost efficiency
-    ap.add_argument("--preprocess_case",  action="store_true",
-                    help="Run case extraction LLM call before generation (adds 1 verifier call/sample)")
-    ap.add_argument("--prefetch_snomed",  action="store_true",
-                    help="Batch fetch SNOMED for option terms before generation")
+    # Evidence source — modular, pick one or combine
+    ap.add_argument("--evidence_source",       type=str, default="pubmed",
+                    choices=["pubmed", "snomed", "both", "none"],
+                    help="Evidence source for verifier feedback. "
+                         "pubmed=PubMed abstracts, snomed=SNOMED CT definitions, "
+                         "both=combined, none=no external evidence")
 
-    ap.add_argument("--split",           type=str,  default="train")
-    ap.add_argument("--max_samples",     type=int,  default=20)
-    ap.add_argument("--start_idx",       type=int,  default=0)
-    ap.add_argument("--end_idx",         type=int,  default=-1)
-    ap.add_argument("--n_processes","-p",type=int,  default=8)
-    ap.add_argument("--debug",     "-d", action="store_true")
-    ap.add_argument("--continue_from","-c", type=str, default=None)
-    ap.add_argument("--extra",           type=str,  default="")
+    # Feedback control
+    ap.add_argument("--max_corrections",       type=int, default=10,
+                    help="Max feedback blocks per sample before stopping")
+    ap.add_argument("--paragraph_interval",    type=int, default=1,
+                    help="Trigger verification every N paragraphs (default: every paragraph)")
+    ap.add_argument("--verification_window",   type=int, default=3,
+                    help="Number of paragraphs sent per verification call")
+
+    # Pre-processing (both off by default — add to save LLM calls)
+    ap.add_argument("--preprocess_case",       action="store_true",
+                    help="Extract compact case facts before generation (1 extra LLM call/sample)")
+    ap.add_argument("--prefetch_snomed",       action="store_true",
+                    help="Batch-fetch SNOMED for option terms before generation")
+
+    # Dataset
+    ap.add_argument("--split",                 type=str, default="train")
+    ap.add_argument("--max_samples",           type=int, default=20)
+    ap.add_argument("--start_idx",             type=int, default=0)
+    ap.add_argument("--end_idx",               type=int, default=-1)
+
+    # Execution
+    ap.add_argument("--n_processes", "-p",     type=int, default=8)
+    ap.add_argument("--debug",        "-d",    action="store_true")
+    ap.add_argument("--continue_from", "-c",   type=str, default=None)
+    ap.add_argument("--extra",                 type=str, default="")
 
     return ap.parse_args()
 
@@ -252,6 +274,14 @@ def main():
         print(f"Continuing from {args.continue_from}, skipping {len(done_ids)} completed.")
     else:
         open(output_file, "w").close()
+
+    print(f"\nConfig:")
+    print(f"  evidence_source:     {args.evidence_source}")
+    print(f"  max_corrections:     {args.max_corrections}")
+    print(f"  paragraph_interval:  {args.paragraph_interval}")
+    print(f"  verification_window: {args.verification_window}")
+    print(f"  preprocess_case:     {args.preprocess_case}")
+    print(f"  prefetch_snomed:     {args.prefetch_snomed}\n")
 
     if not args.debug:
         with Pool(processes=args.n_processes) as pool:
