@@ -1,0 +1,20 @@
+{
+    "solver_lm": "Qwen/Qwen3-8B",
+    "port": 8000,
+    "monitor": true,
+    "verifier_port": 8001,
+    "verifier_model": "Qwen/Qwen3-8B",
+    "no_snomed": false,
+    "preprocess_case": false,
+    "prefetch_snomed": false,
+    "conf_threshold": 0.65,
+    "no_confidence_gate": false,
+    "split": "train",
+    "max_samples": 1000,
+    "start_idx": 0,
+    "end_idx": -1,
+    "n_processes": 8,
+    "debug": false,
+    "continue_from": null,
+    "extra": "qwen3_verifier_065"
+}
