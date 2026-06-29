@@ -1,266 +1,310 @@
 """
-Medical Reasoning (MedReason) experiment runner.
-
-This is the general entry point: it loads a question from the MedReason
-HuggingFace dataset, sends it as a prompt to the solver LLM, and traces the
-reasoning via stream_completion() + MedicalMonitor.
-
-The model is NOT told to use any particular reasoning structure. The only
-structural requirement, added at the prompt level (see medical_helper.py), is
-that reasoning happens inside a single <think>...</think> block — matching
-every other InterWhen dataset integration (Game24, Maze, SpatialMap,
-ZebraLogic, Verina).
-
-MedicalMonitor currently:
-  - step_extractor: fires every K non-empty lines generated inside <think>.
-  - verify: stub, always passes (no real verifier yet).
-  - fix: no-op (never invoked while verify() is a stub).
-
-Usage (local vLLM server required):
-    python examples/TTSwithVerification/interwhen/medical_example.py --solver_lm Qwen/QwQ-32B --port 8000 --monitor --line_interval 5 --num_examples 10 --debug
-
-Without the monitor (plain baseline generation):
-    python examples/TTSwithVerification/interwhen/medical_example.py --solver_lm Qwen/QwQ-32B --port 8000 --num_examples 10
+run_medical_example.py
+Example script for running a medical reasoning task with TTS and verifier feedback.
 """
+
+from __future__ import annotations
 
 import argparse
 import asyncio
 import json
 import logging
 import os
+import re
 from datetime import datetime
 from multiprocessing import Pool
 
 from tqdm import tqdm
 from transformers import AutoTokenizer
+from datasets import load_dataset
 
 from interwhen import stream_completion
-from interwhen.monitors import MedicalMonitor
-from interwhen.utils.medical_helper import (
-    get_medical_dataset,
-    build_prompt,
-    extract_post_think_answer,
-)
+from interwhen.monitors.medical_monitor import MedicalMonitor
+from interwhen.utils.medical_prompts import SYSTEM_PROMPT_MEDICAL, USER_PROMPT_TEMPLATE
 
-logging.basicConfig(
-    level=logging.ERROR,
-    format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
-)
-logger = logging.getLogger(__name__)
-
-# Module-level tokenizer — initialised in __main__ for multiprocessing safety
+logger    = logging.getLogger(__name__)
 tokenizer = None
 
 
-# ---------------------------------------------------------------------------
-# LLM server configuration
-# ---------------------------------------------------------------------------
+# ══════════════════════════════════════════════════════════════════════════════
+# MEDREASON LOADING
+# ══════════════════════════════════════════════════════════════════════════════
 
-def init_llm_server(model_name: str, max_tokens: int = 32768, port: int = 8000) -> dict:
-    """Return an llm_server config dict expected by stream_completion()."""
-    url = f"http://localhost:{port}/v1/completions"
-    payload = {
-        "model": model_name,
-        "max_tokens": max_tokens,
-        "top_k": 20,
-        "top_p": 0.95,
-        "min_p": 0.0,
-        "temperature": 0.6,
-        "stream": True,
-        "logprobs": 20,
-        "use_beam_search": False,
-        "prompt_cache": True,
-        "seed": 42,
+class MedReasonLoader:
+    HF_PATH = "UCSC-VLAA/MedReason"
+    _OPT_RE = re.compile(r"([A-E])\.\s*(.*?)(?=\n[A-E]\.|$)", re.DOTALL)
+
+    def load(self, split, start_idx, end_idx, max_samples):
+        print(f"Loading {self.HF_PATH}  split={split} ...")
+        raw = load_dataset(self.HF_PATH, split=split)
+        end = min(end_idx, len(raw)) if end_idx > 0 else len(raw)
+        raw = raw.select(range(start_idx, end))
+        if max_samples > 0:
+            raw = raw.select(range(min(max_samples, len(raw))))
+        rows = [self._normalise(i, item) for i, item in enumerate(raw)]
+        print(f"  -> {len(rows)} samples ready.\n")
+        return rows
+
+    def _normalise(self, idx, item):
+        options = {k: v.strip() for k, v in self._OPT_RE.findall(str(item.get("options", "")))}
+        raw_ans = str(item.get("answer", "")).split("Explanation:")[0].strip().rstrip(". ")
+        return {
+            "id":        str(item.get("id_in_dataset", idx)),
+            "question":  item.get("question", ""),
+            "options":   options,
+            "answer":    self._match_answer(raw_ans, options),
+            "reasoning": item.get("reasoning") or "",
+        }
+
+    @staticmethod
+    def _match_answer(clean, options):
+        cl = clean.lower()
+        for letter, text in options.items():
+            if cl == text.lower() or cl in text.lower() or text.lower() in cl:
+                return letter
+        words = set(cl.split())
+        best_l, best_n = "?", 0
+        for letter, text in options.items():
+            n = len(words & set(text.lower().split()))
+            if n > best_n:
+                best_n, best_l = n, letter
+        return best_l if best_n > 0 else "?"
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# SOLVER PROMPT
+# ══════════════════════════════════════════════════════════════════════════════
+
+def init_llm_server(model_name, max_tokens=16 * 1024, port=8000):
+    return {
+        "url": f"http://localhost:{port}/v1/completions",
+        "payload": {
+            "model": model_name, "max_tokens": max_tokens,
+            "top_k": 20, "top_p": 0.95, "min_p": 0.0, "temperature": 0.6,
+            "stream": True, "logprobs": 20, "use_beam_search": False,
+            "prompt_cache": True, "seed": 42,
+        },
+        "headers": {"Content-Type": "application/json"},
     }
-    headers = {"Content-Type": "application/json"}
-    return {"url": url, "payload": payload, "headers": headers}
 
 
-# ---------------------------------------------------------------------------
-# Single-problem runner
-# ---------------------------------------------------------------------------
+def build_prompt(sample, tok):
+    case_text = sample["question"]
+    if sample["options"]:
+        case_text += "\n\nOptions:\n" + "\n".join(
+            f"{k}. {v}" for k, v in sample["options"].items()
+        )
+    user_prompt = USER_PROMPT_TEMPLATE.format(case_text=case_text)
+    return tok.apply_chat_template(
+        [{"role": "system", "content": SYSTEM_PROMPT_MEDICAL},
+         {"role": "user",   "content": user_prompt}],
+        tokenize=False, add_generation_prompt=True,
+    )
 
-def run(args, problem: dict) -> dict:
-    """Send one MedReason question to the solver LLM and trace its reasoning.
 
-    Args:
-        args:    Parsed argparse namespace.
-        problem: Problem dict from get_medical_dataset() — contains
-                 question, options, answer, reasoning, id, dataset_name.
+# ══════════════════════════════════════════════════════════════════════════════
+# SCORING
+# ══════════════════════════════════════════════════════════════════════════════
 
-    Returns:
-        Result dict written to the JSONL output file.
-    """
+def exact_correctness_check(output_text, sample):
+    m = re.search(r"\[FINAL ANSWER\](.*?)\[/FINAL ANSWER\]", output_text, re.DOTALL)
+    if not m:
+        return None
+    block = m.group(1)
+    opt   = re.search(r"Selected Option:\s*([A-E])", block, re.IGNORECASE)
+    if not opt:
+        return None
+    return opt.group(1).strip().upper() == sample["answer"].strip().upper()
+
+
+def rough_correctness_check(output_text, sample):
+    m     = re.search(r"\[FINAL ANSWER\](.*?)\[/FINAL ANSWER\]", output_text, re.DOTALL)
+    block = (m.group(1) if m else output_text[-600:]).lower()
+    gt    = sample["options"].get(sample["answer"], "").lower()
+    if not gt:
+        return None
+    gt_words = set(gt.split())
+    return len(gt_words & set(block.split())) >= max(1, len(gt_words) // 2)
+
+
+def check_correctness(output_text, sample):
+    result = exact_correctness_check(output_text, sample)
+    if result is not None:
+        return result
+    return rough_correctness_check(output_text, sample)
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# PER SAMPLE RUN
+# ══════════════════════════════════════════════════════════════════════════════
+
+def run(args, sample):
     global tokenizer
+    llm_server = init_llm_server(args.solver_lm, port=args.port)
+    prompt     = build_prompt(sample, tokenizer)
 
-    problem_id = problem["id"]
-    output_file = os.path.join(args.output_dir, "outputs_medical.jsonl")
-
-    llm_server = init_llm_server(args.solver_lm, max_tokens=args.max_tokens, port=args.port)
-    prompt = build_prompt(problem, tokenizer)
-
+    monitors = []
     if args.monitor:
-        monitors = [
-            MedicalMonitor(
-                name="MedicalMonitor",
-                instance=problem,
-                line_interval=args.line_interval,
-                max_corrections=args.monitor_max_corrections,
-            )
-        ]
-    else:
-        monitors = []
+        monitors = [MedicalMonitor(
+            name                 = "MedicalVerifier",
+            instance             = sample,
+            line_interval        = args.line_interval,
+            max_corrections      = args.max_corrections,
+            verification_window  = args.verification_window,
+            confidence_threshold = args.confidence_threshold,
+            verifier_port        = args.verifier_port,
+            verifier_model       = args.verifier_model,
+            evidence_source      = args.evidence_source,
+            run_snomed           = not args.no_snomed,
+            preprocess_case      = args.preprocess_case,
+            prefetch_snomed      = args.prefetch_snomed,
+        )]
 
-    output_text = asyncio.run(
-        stream_completion(
+    output_text  = ""
+    decision_log = []
+    try:
+        output_text = asyncio.run(stream_completion(
             prompt,
-            llm_server=llm_server,
-            monitors=tuple(monitors) if monitors else [],
-            add_delay=False,
-            async_execution=not args.debug,
-        )
-    )
+            llm_server      = llm_server,
+            monitors        = tuple(monitors),
+            async_execution = not args.debug,
+        ))
+        if monitors:
+            decision_log = monitors[0].verifier.decision_log
+    except Exception as e:
+        logger.warning("stream_completion failed for sample %s: %s", sample["id"], e)
 
-    predicted_answer = extract_post_think_answer(output_text)
+    correct       = check_correctness(output_text, sample)
+    exact_matched = exact_correctness_check(output_text, sample)
 
-    output = {
-        "problem_id": problem_id,
-        "dataset_name": problem.get("dataset_name", ""),
-        "question": problem["question"],
-        "options": problem.get("options", ""),
-        "reference_answer": problem.get("answer", ""),
-        "output_text": output_text,
-        "predicted_answer": predicted_answer,
+    result = {
+        "sample_id":     sample["id"],
+        "question":      sample["question"],
+        "ground_truth":  sample["answer"],
+        "output_text":   output_text,
+        "correct":       correct,
+        "exact_matched": exact_matched is not None,
+        "decision_log":  decision_log,
     }
-
-    with open(output_file, "a") as f:
-        f.write(json.dumps(output, default=str) + "\n")
-
-    return output
+    with open(f"{args.output_dir}/outputs.jsonl", "a") as f:
+        f.write(json.dumps(result, default=str) + "\n")
+    return result
 
 
-def _run_wrapper(args_problem):
-    """Multiprocessing-safe wrapper."""
-    return run(*args_problem)
+def _run_wrapper(args_sample):
+    return run(*args_sample)
 
 
-# ---------------------------------------------------------------------------
-# Entry point
-# ---------------------------------------------------------------------------
+# ══════════════════════════════════════════════════════════════════════════════
+# CLI
+# ══════════════════════════════════════════════════════════════════════════════
 
-if __name__ == "__main__":
-    parser = argparse.ArgumentParser(
-        description="Medical Reasoning (MedReason) LLM Solver with MedicalMonitor"
-    )
-    parser.add_argument(
-        "--solver_lm", type=str, required=True,
-        help="Solver LLM model name (e.g. Qwen/QwQ-32B)",
-    )
-    parser.add_argument(
-        "--port", type=int, default=8000,
-        help="vLLM server port (default: 8000)",
-    )
-    parser.add_argument(
-        "--monitor", "-m", action="store_true",
-        help="Enable MedicalMonitor (reasoning tracing during generation)",
-    )
-    parser.add_argument(
-        "--monitor_max_corrections", type=int, default=50,
-        help="Maximum feedback injections per problem (default: 50)",
-    )
-    parser.add_argument(
-        "--line_interval", type=int, default=5,
-        help="Trigger monitor verification every N non-empty reasoning lines "
-             "inside <think> (default: 5)",
-    )
-    parser.add_argument(
-        "--max_tokens", type=int, default=16384,
-        help="Max tokens for generation (default: 16384)",
-    )
-    parser.add_argument(
-        "--dataset_name_filter", type=str, default=None,
-        help="Optional: restrict to one MedReason source dataset "
-             "(e.g. medmcqa, pubmedqa, etc.)",
-    )
-    parser.add_argument(
-        "--num_examples", type=int, default=10,
-        help="Number of MedReason questions to run (default: 10)",
-    )
-    parser.add_argument(
-        "--n_processes", "-p", type=int, default=4,
-        help="Number of parallel worker processes (default: 4)",
-    )
-    parser.add_argument(
-        "--debug", "-d", action="store_true",
-        help="Debug mode: single process, verbose logging, run 1 example",
-    )
-    parser.add_argument(
-        "--continue_from", "-c", type=str, default=None,
-        help="Continue from a previous output directory",
-    )
-    parser.add_argument(
-        "--extra", type=str, default="",
-        help="Extra label appended to the output directory name",
-    )
-    args = parser.parse_args()
+def parse_args():
+    ap = argparse.ArgumentParser()
 
-    if args.debug:
-        logging.basicConfig(
-            level=logging.INFO,
-            format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
-            force=True,
-        )
+    # Solver
+    ap.add_argument("--solver_lm",             type=str, required=True)
+    ap.add_argument("--port",                  type=int, default=8000)
 
-    # Module-level tokenizer (must be set before multiprocessing)
+    # Monitor / verifier
+    ap.add_argument("--monitor",   "-m",       action="store_true")
+    ap.add_argument("--verifier_port",         type=int, default=8001)
+    ap.add_argument("--verifier_model",        type=str, default="medverifier")
+    ap.add_argument("--no_snomed",             action="store_true")
+
+    # Evidence source  modular, pick one or combine
+    ap.add_argument("--evidence_source",       type=str, default="pubmed",
+                    choices=["pubmed", "snomed", "both", "none"],
+                    help="Evidence source for verifier feedback. "
+                         "pubmed=PubMed abstracts, snomed=SNOMED CT definitions, "
+                         "both=combined, none=no external evidence")
+
+    # Feedback control
+    ap.add_argument("--max_corrections",       type=int, default=10,
+                    help="Max feedback blocks per sample before stopping")
+    ap.add_argument("--confidence_threshold",  type=float, default=0.9,
+                    help="Min verifier confidence to act on FALSE (default: 0.9). "
+                         "Lower for stronger/same-family verifiers (e.g. 0.7). "
+                         "Keep high for weak verifiers like Meditron3 8B.")
+    ap.add_argument("--line_interval",         type=int, default=15,
+                    help="Trigger verification every N lines (default: 15)")
+    ap.add_argument("--verification_window",   type=int, default=3,
+                    help="Number of paragraphs sent per verification call")
+
+    # Pre processing (both off by default , add to save LLM calls)
+    ap.add_argument("--preprocess_case",       action="store_true",
+                    help="Extract compact case facts before generation (1 extra LLM call/sample)")
+    ap.add_argument("--prefetch_snomed",       action="store_true",
+                    help="Batch-fetch SNOMED for option terms before generation")
+
+    # Dataset
+    ap.add_argument("--split",                 type=str, default="train")
+    ap.add_argument("--max_samples",           type=int, default=20)
+    ap.add_argument("--start_idx",             type=int, default=0)
+    ap.add_argument("--end_idx",               type=int, default=-1)
+
+    # Execution
+    ap.add_argument("--n_processes", "-p",     type=int, default=8)
+    ap.add_argument("--debug",        "-d",    action="store_true")
+    ap.add_argument("--continue_from", "-c",   type=str, default=None)
+    ap.add_argument("--extra",                 type=str, default="")
+
+    return ap.parse_args()
+
+
+def main():
+    global tokenizer
+    args = parse_args()
+
+    logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
+
     tokenizer = AutoTokenizer.from_pretrained(args.solver_lm)
+    samples   = MedReasonLoader().load(args.split, args.start_idx, args.end_idx, args.max_samples)
 
-    # Load dataset from HuggingFace (UCSC-VLAA/MedReason)
-    logger.info("Loading MedReason dataset from HuggingFace...")
-    ds = get_medical_dataset(
-        dataset_name_filter=args.dataset_name_filter,
-        limit=args.num_examples,
-    )
-
-    # Output directory setup
     if args.continue_from:
-        output_dir = f"Outputs_TTS/medical/{args.continue_from}"
+        output_dir = f"Outputs_TTS/medreason/{args.continue_from}"
     else:
-        output_dir = f"Outputs_TTS/medical/{datetime.now().strftime('%Y%m%d_%H%M%S')}"
+        output_dir = f"Outputs_TTS/medreason/{datetime.now().strftime('%Y%m%d_%H%M%S')}"
         if args.extra:
             output_dir += f"-{args.extra}"
         os.makedirs(output_dir, exist_ok=True)
-        with open(os.path.join(output_dir, "args.json"), "w") as f:
+        with open(f"{output_dir}/args.json", "w") as f:
             json.dump(vars(args), f, indent=4)
-
     args.output_dir = output_dir
-    output_file = os.path.join(output_dir, "outputs_medical.jsonl")
 
-    # Resume support 
-    if args.continue_from and os.path.exists(output_file):
-        with open(output_file) as f:
-            completed_ids = {json.loads(line)["problem_id"] for line in f}
-        ds_run = [p for p in ds if p["id"] not in completed_ids]
-        logger.warning(
-            "Continuing from %s — skipping %d completed problems.",
-            args.continue_from, len(completed_ids),
-        )
+    output_file = f"{output_dir}/outputs.jsonl"
+    if args.continue_from:
+        with open(output_file, "r") as f:
+            done_ids = {json.loads(line)["sample_id"] for line in f}
+        samples = [s for s in samples if s["id"] not in done_ids]
+        print(f"Continuing from {args.continue_from}, skipping {len(done_ids)} completed.")
     else:
-        with open(output_file, "w") as f:
-            f.write("")
-        ds_run = ds
+        open(output_file, "w").close()
 
-    # Run
+    print(f"\nConfig:")
+    print(f"  evidence_source:     {args.evidence_source}")
+    print(f"  line_interval:       {args.line_interval}")
+    print(f"  max_corrections:     {args.max_corrections}")
+    print(f"  verification_window: {args.verification_window}")
+    print(f"  preprocess_case:     {args.preprocess_case}")
+    print(f"  prefetch_snomed:     {args.prefetch_snomed}\n")
+
     if not args.debug:
         with Pool(processes=args.n_processes) as pool:
-            results = list(
-                tqdm(
-                    pool.imap_unordered(_run_wrapper, [(args, p) for p in ds_run]),
-                    total=len(ds_run),
-                    desc="Medical problems",
-                )
-            )
+            results = list(tqdm(
+                pool.imap_unordered(_run_wrapper, [(args, s) for s in samples]),
+                total=len(samples),
+            ))
     else:
-        # Single-process debug mode — run only the first problem
-        _run_wrapper((args, ds_run[0]))
+        results = [run(args, samples[0])] if samples else []
 
-    print(f"\nDone. Results written to {output_file}")
+    scored = [r["correct"] for r in results if r.get("correct") is not None]
+    exact  = [r["exact_matched"] for r in results]
+    if scored:
+        print(f"\nAccuracy:       {sum(scored)}/{len(scored)} = {sum(scored)/len(scored):.2%}")
+        print(f"[FINAL ANSWER] block found in {sum(exact)}/{len(exact)} outputs")
+    print(f"Output -> {output_file}")
+
+
+if __name__ == "__main__":
+    main()
