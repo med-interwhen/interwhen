@@ -612,8 +612,8 @@ class MedicalReasoningVerifier:
         if label == "FALSE":
             # Confidence gate
             if confidence < self.config.confidence_threshold:
-                logger.info("[VERIFIER] FALSE ignored  confidence %.2f < 0.8", confidence)
-                print(f"  [VERIFIER] INFERENCE: FALSE ignored (confidence={confidence:.2f} < 0.8)")
+                logger.info("[VERIFIER] FALSE ignored  confidence %.2f < %.2f", confidence, self.config.confidence_threshold)
+                print(f"  [VERIFIER] INFERENCE: FALSE ignored (confidence={confidence:.2f} < {self.config.confidence_threshold:.2f})")
                 return True, None
 
             wrong      = resp.get("wrong_claim")
@@ -687,8 +687,8 @@ class MedicalReasoningVerifier:
 
         if label == "FALSE":
             if confidence < self.config.confidence_threshold:
-                logger.info("[VERIFIER] CONCLUSION FALSE ignored , confidence %.2f < 0.8", confidence)
-                print(f"  [VERIFIER] CONCLUSION: FALSE ignored (confidence={confidence:.2f} < 0.8)")
+                logger.info("[VERIFIER] CONCLUSION FALSE ignored , confidence %.2f < %.2f", confidence, self.config.confidence_threshold)
+                print(f"  [VERIFIER] CONCLUSION: FALSE ignored (confidence={confidence:.2f} < {self.config.confidence_threshold:.2f})")
                 return True, None
             wrong            = resp.get("wrong_claim")
             evidence_context = self._fetch_evidence(wrong)
