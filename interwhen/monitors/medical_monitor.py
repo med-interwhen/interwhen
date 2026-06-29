@@ -156,12 +156,12 @@ class MedicalMonitor(VerifyMonitor):
             return True, generated_text
 
         if "\n" in chunk:
-            # Count non-empty lines arriving in this chunk
-            new_lines = sum(1 for l in chunk.split("\n") if l.strip())
-            self._line_count += new_lines
+            # Count newline characters directly — vLLM streams \n as its own
+            # token so split("\n") always yields ["",""] giving 0 non-empty lines.
+            self._line_count += chunk.count("\n")
             since = self._line_count - self._last_trigger_line
             if since >= self.line_interval:
-                logger.info("[MONITOR] Trigger: %d non-empty lines accumulated", since)
+                logger.info("[MONITOR] Trigger: %d lines accumulated", since)
                 print(f"\n  [MONITOR] Trigger → {since} lines")
                 self._last_trigger_line = self._line_count
                 return True, generated_text
