@@ -26,7 +26,7 @@ Solver LLM (streaming)
        │
        ├── UNKNOWN → fetch SNOMED → re-verify → TRUE/FALSE
        │
-       └── FALSE (confidence ≥ 0.9)
+       └── FALSE (confidence ≥ threshold)
                │
                ├── flip-flop guard (already corrected this topic? → skip)
                │
@@ -212,7 +212,7 @@ class VerifierConfig:
     evidence_source:          str   = "pubmed"
     verification_window:      int   = 3      # paragraphs per call
     max_feedback_per_sample:  int   = 10
-    confidence_threshold:     float = 0.9    # minimum confidence to act on FALSE
+    confidence_threshold:     float = 0.8    # minimum confidence to act on FALSE
                                              # directive fires at threshold + 0.05
 ```
 
@@ -251,10 +251,10 @@ If `compact_case` has no patient, vitals, chief complaint, labs, or imaging - it
 The verifier returns a confidence score (0–1) alongside TRUE/FALSE/UNKNOWN.
 
 - `confidence < confidence_threshold` → treat as PASS regardless of label
-- `confidence_threshold ≤ confidence < threshold + 0.05` → FAIL, feedback injected without the "your final answer may need to change" directive
-- `confidence ≥ threshold + 0.05` → FAIL, full directive feedback injected
+- `confidence_threshold ≤ confidence < threshold + 0.1` → FAIL, feedback injected without the "your final answer may need to change" directive
+- `confidence ≥ threshold + 0.1` → FAIL, full directive feedback injected
 
-Default threshold is 0.9. Recommended values:
+Default threshold is 0.8. Recommended values:
 
 | Verifier | Recommended threshold |
 |---|---|
@@ -268,7 +268,7 @@ Each verifier instance tracks corrected topics in `_corrected_topics`. If the sa
 
 ### Evidence fetching on FALSE
 
-When a paragraph fails with confidence ≥ 0.9:
+When a paragraph fails with confidence ≥ 0.8:
 
 **`evidence_source="pubmed"`** - queries NCBI E-utilities:
 1. `esearch`: finds PMIDs matching the wrong claim + quality filter (`meta-analysis[pt] OR systematic review[pt] OR practice guideline[pt]`). Falls back to plain search if no results.
@@ -301,7 +301,7 @@ Re-evaluate your option selection. Your final answer may need to change.
 [/FEEDBACK]
 ```
 
-The final directive line only appears when `confidence ≥ 0.95`.
+The final directive line only appears when `confidence ≥ 0.9`.
 
 ---
 
@@ -419,7 +419,7 @@ def rough_correctness_check(output_text, sample):
 
 **Verifier never sees question or options.** The verifier judges reasoning consistency only - it receives prior reasoning as context and the new paragraph as hypothesis. Question and options are not forwarded. This prevents the verifier from using its own answer preference to override the solver's reasoning chain.
 
-**No routing LLM call.** Evidence source is purely a config parameter. SNOMED or PubMed (or both) is called on every FALSE at confidence ≥ 0.9, regardless of claim type.
+**No routing LLM call.** Evidence source is purely a config parameter. SNOMED or PubMed (or both) is called on every FALSE at confidence ≥ 0.8, regardless of claim type.
 
 **Pending revision pattern.** When a paragraph fails, `_pending_revision` stores `(wrong_claim, correction)`. The compact state is not updated yet. Only when the next verification call returns TRUE (model incorporated the feedback) is the revision written to `CompactState.claims`. This prevents the state from showing a revision that the model never made.
 
