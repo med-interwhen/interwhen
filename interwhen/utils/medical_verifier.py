@@ -291,9 +291,9 @@ class VerifierConfig:
     max_feedback_per_sample:  int   = 10
     # Minimum verifier confidence to act on FALSE.
     # Below this threshold, FALSE is treated as PASS.
-    # 0.9 = conservative (use with weak/misaligned verifiers like Meditron3 8B)
+    # 0.8 = conservative (use with weak/misaligned verifiers like Meditron3 8B)
     # 0.7 = reasonable (use with same-family or stronger verifiers)
-    confidence_threshold:     float = 0.9
+    confidence_threshold:     float = 0.8
 
 
 # ══════════════════════════════════════════════════════════════════════════════
@@ -410,7 +410,7 @@ class MedicalReasoningVerifier:
         self._pending_revision: Optional[Tuple[str, str]] = None
         self._corrected_topics: set = set()
 
-    # ── text splitting ────────────────────────────────────────────────────────
+    #                      text splitting 
 
     @staticmethod
     def _split_latest(text, think_open_tag="<think>", window=1):
@@ -447,7 +447,7 @@ class MedicalReasoningVerifier:
     def _options_text(options: dict) -> str:
         return "\n".join(f"{k}. {v}" for k, v in options.items()) if options else ""
 
-    # ── knowledge question detection ──────────────────────────────────────────
+    #                       knowledge question detection 
 
     def _is_knowledge_question(self) -> bool:
         try:
@@ -462,7 +462,7 @@ class MedicalReasoningVerifier:
         except Exception:
             return not bool(self.compact_case.strip())
 
-    # ── SNOMED helpers ────────────────────────────────────────────────────────
+    #                           SNOMED helpers 
 
     def _build_snomed_block(self):
         if not self.snomed_cache:
@@ -484,7 +484,7 @@ class MedicalReasoningVerifier:
                     logger.info("[SNOMED] '%s' → NOT FOUND", term)
                 time.sleep(self.config.snomed_rate_limit_sleep)
 
-    # ── Evidence fetching — routes by evidence_source config ─────────────────
+    #                           Evidence fetching , routes by evidence_source config 
 
     def _fetch_evidence(self, claim: str) -> Optional[str]:
         """
@@ -519,7 +519,7 @@ class MedicalReasoningVerifier:
 
         return "\n\n".join(results) if results else None
 
-    # ── classify ─────────────────────────────────────────────────────────────
+    #                                  classify 
 
     def _classify(self, content):
         logger.info("[VERIFIER] Classifying (%d chars): %s...", len(content), content[:60])
@@ -533,7 +533,7 @@ class MedicalReasoningVerifier:
         print(f"  [VERIFIER] Paragraph type: {result} | {reason}")
         return result
 
-    # ── build verification prompt ─────────────────────────────────────────────
+    #                             build verification prompt 
 
     def _build_verify_prompt(self, prior_context, content, allow_unknown=True):
         snomed_block = self._build_snomed_block()
@@ -552,7 +552,7 @@ class MedicalReasoningVerifier:
             allow_unknown   = allow_unknown,
         )
 
-    # ── verification methods ──────────────────────────────────────────────────
+    #                             verification methods 
 
     def _verify_observation(self, content):
         if self._is_knowledge_question() or not self.compact_case.strip():
@@ -612,18 +612,18 @@ class MedicalReasoningVerifier:
         if label == "FALSE":
             # Confidence gate
             if confidence < self.config.confidence_threshold:
-                logger.info("[VERIFIER] FALSE ignored — confidence %.2f < 0.9", confidence)
-                print(f"  [VERIFIER] INFERENCE: FALSE ignored (confidence={confidence:.2f} < 0.9)")
+                logger.info("[VERIFIER] FALSE ignored  confidence %.2f < 0.8", confidence)
+                print(f"  [VERIFIER] INFERENCE: FALSE ignored (confidence={confidence:.2f} < 0.8)")
                 return True, None
 
             wrong      = resp.get("wrong_claim")
             correction = resp.get("correction")
 
-            # Flip-flop prevention
+            # Flip flop prevention
             topic_key = (wrong or "")[:50].lower().strip()
             if topic_key and topic_key in self._corrected_topics:
-                logger.info("[VERIFIER] Flip-flop guard: already addressed '%s'", topic_key[:40])
-                print("  [VERIFIER] INFERENCE: skipping repeat correction (flip-flop guard)")
+                logger.info("[VERIFIER] Flip flop guard: already addressed '%s'", topic_key[:40])
+                print("  [VERIFIER] INFERENCE: skipping repeat correction (flip flop guard)")
                 return True, None
             if topic_key:
                 self._corrected_topics.add(topic_key)
@@ -641,16 +641,16 @@ class MedicalReasoningVerifier:
 
             # Directive only at very high confidence
             directive = (
-                "Re-evaluate your option selection. Your final answer may need to change."
-                if confidence >= (self.config.confidence_threshold + 0.05) else None
+                "Re evaluate your option selection. Your final answer may need to change."
+                if confidence >= (self.config.confidence_threshold + 0.1) else None
             )
             fb = self._format_feedback(resp, evidence_context=evidence_context, directive=directive)
             logger.info("[VERIFIER] Feedback generated:\n%s", fb)
             return False, fb
 
         if label == "UNKNOWN" and not _retried:
-            logger.info("[VERIFIER] INFERENCE UNKNOWN — fetching SNOMED for terms")
-            print("  [VERIFIER] INFERENCE: UNKNOWN — fetching SNOMED...")
+            logger.info("[VERIFIER] INFERENCE UNKNOWN , fetching SNOMED for terms")
+            print("  [VERIFIER] INFERENCE: UNKNOWN , fetching SNOMED...")
             if self.snomed and self.config.run_snomed:
                 terms_resp = self.vllm.call(
                     MedicalReasoningPromptBuilder.build_snomed_term_extraction_prompt(
@@ -687,14 +687,14 @@ class MedicalReasoningVerifier:
 
         if label == "FALSE":
             if confidence < self.config.confidence_threshold:
-                logger.info("[VERIFIER] CONCLUSION FALSE ignored — confidence %.2f < 0.9", confidence)
-                print(f"  [VERIFIER] CONCLUSION: FALSE ignored (confidence={confidence:.2f} < 0.9)")
+                logger.info("[VERIFIER] CONCLUSION FALSE ignored , confidence %.2f < 0.8", confidence)
+                print(f"  [VERIFIER] CONCLUSION: FALSE ignored (confidence={confidence:.2f} < 0.8)")
                 return True, None
             wrong            = resp.get("wrong_claim")
             evidence_context = self._fetch_evidence(wrong)
             directive        = (
                 "Re-evaluate your option selection. Your final answer may need to change."
-                if confidence >= (self.config.confidence_threshold + 0.05) else None
+                if confidence >= (self.config.confidence_threshold + 0.1) else None
             )
             fb = self._format_feedback(resp, evidence_context=evidence_context, directive=directive)
             logger.info("[VERIFIER] CONCLUSION FAIL:\n%s", fb)
@@ -703,7 +703,7 @@ class MedicalReasoningVerifier:
 
         return True, None
 
-    # ── feedback formatting — directive, not punishing ────────────────────────
+    #  feedback formatting  directive, not punishing 
 
     @staticmethod
     def _format_feedback(resp, evidence_context=None, directive=None):
@@ -732,7 +732,7 @@ class MedicalReasoningVerifier:
         return "\n".join(l for l in lines if l).strip() \
                or "Review this reasoning step before continuing."
 
-    # ── logging ───────────────────────────────────────────────────────────────
+    #                               logging 
 
     def _log(self, para_type, label, content, feedback):
         self.decision_log.append({
@@ -742,12 +742,12 @@ class MedicalReasoningVerifier:
             "feedback":          feedback,
         })
 
-    # ── main entry point ──────────────────────────────────────────────────────
+    #                           main entry point 
 
     def verify_trace(self, text, question="", options=None):
         """
         question and options accepted for interface compatibility
-        but not sent to verifier LLM — reasoning consistency only.
+        but not sent to verifier LLM  reasoning consistency only.
         Uses config.verification_window paragraphs per call.
         """
         prior_context, new_content = self._split_latest(

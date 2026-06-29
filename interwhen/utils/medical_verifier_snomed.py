@@ -24,9 +24,9 @@ class SnomedFirstConfig(VerifierConfig):
 
 class MedicalReasoningVerifierSnomedFirst(MedicalReasoningVerifier):
     """
-    Extends MedicalReasoningVerifier with per-paragraph real-time SNOMED enrichment.
+    Extends MedicalReasoningVerifier with per paragraph real time SNOMED enrichment.
     Only enriches SNOMED cache when evidence_source includes "snomed".
-    When evidence_source is "pubmed" or "none", _enrich_for_paragraph is a no-op.
+    When evidence_source is "pubmed" or "none", _enrich_for_paragraph is a no op.
     """
 
     def __init__(
@@ -50,7 +50,7 @@ class MedicalReasoningVerifierSnomedFirst(MedicalReasoningVerifier):
     def _enrich_for_paragraph(self, content: str) -> None:
         """
         Extract clinical terms from paragraph and fetch SNOMED for uncached ones.
-        Skipped entirely when evidence_source is "pubmed" or "none" —
+        Skipped entirely when evidence_source is "pubmed" or "none" 
         no point populating the SNOMED cache if we won't use it.
         """
         if self.config.evidence_source not in ("snomed", "both"):

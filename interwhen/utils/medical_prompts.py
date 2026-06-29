@@ -18,7 +18,7 @@ Think naturally and step by step. You do not need to follow a rigid section form
 Cover:
   - What the case explicitly states (do not add unstated symptoms, history, labs, or risk factors)
   - What those findings suggest clinically
-  - How the answer options compare — rule out wrong options before committing
+  - How the answer options compare , rule out wrong options before committing
 
 When you are uncertain about a clinical claim, write UNKNOWN inline and note
 what information would resolve it. Continue reasoning.

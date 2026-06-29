@@ -68,17 +68,17 @@ class MedicalMonitor(VerifyMonitor):
         self.think_open_tag      = think_open_tag
         self.think_close_tag     = think_close_tag
 
-        # line trigger counter — non-empty lines seen since last trigger
+        # line trigger counter , non empty lines seen since last trigger
         self._line_count         = 0
         self._last_trigger_line  = 0
 
-        # ── verifier LLM ──────────────────────────────────────────────────────
+        #                verifier LLM 
         self.vllm_client = LocalVLLMClient(
             base_url = f"http://localhost:{verifier_port}/v1",
             model    = verifier_model,
         )
 
-        # ── SNOMED (optional) ─────────────────────────────────────────────────
+        #               SNOMED (optional) 
         self.snomed_client: Optional[SnomedClient] = None
         if run_snomed and evidence_source in ("snomed", "both"):
             try:
@@ -86,13 +86,13 @@ class MedicalMonitor(VerifyMonitor):
             except ValueError as e:
                 logger.warning("[MedicalMonitor] SNOMED disabled: %s", e)
 
-        # ── PubMed (optional) ─────────────────────────────────────────────────
+        #               PubMed (optional) 
         self.pubmed_client: Optional[PubMedClient] = None
         if evidence_source in ("pubmed", "both"):
             self.pubmed_client = PubMedClient()
             logger.info("[MedicalMonitor] PubMedClient initialised")
 
-        # ── VerifierConfig ────────────────────────────────────────────────────
+        #               VerifierConfig 
         config = SnomedFirstConfig(
             run_snomed              = run_snomed and evidence_source in ("snomed", "both"),
             evidence_source         = evidence_source,
@@ -101,7 +101,7 @@ class MedicalMonitor(VerifyMonitor):
             confidence_threshold    = confidence_threshold,
         )
 
-        # ── Pre-processing (optional) ─────────────────────────────────────────
+        #               Pre processing (optional) 
         question = instance.get("question", "")
         options  = instance.get("options", {})
         prep     = MedicalPreprocessor(self.vllm_client, self.snomed_client, self.pubmed_client)
@@ -118,7 +118,7 @@ class MedicalMonitor(VerifyMonitor):
         else:
             snomed_cache = {}
 
-        # ── Verifier ─────────────────────────────────────────────────────────
+        #                      Verifier 
         self.verifier = MedicalReasoningVerifierSnomedFirst(
             vllm         = self.vllm_client,
             snomed       = self.snomed_client,
@@ -128,7 +128,7 @@ class MedicalMonitor(VerifyMonitor):
             snomed_cache = snomed_cache,
         )
 
-    # ── helpers ───────────────────────────────────────────────────────────────
+    #                         helper FUNCTIONS 
 
     def _is_in_think_block(self, generated_text: str) -> bool:
         return self.think_close_tag not in generated_text
@@ -142,10 +142,10 @@ class MedicalMonitor(VerifyMonitor):
             options  = self.instance.get("options", {})
             return self.verifier.verify_trace(text, question=question, options=options)
         except Exception as e:
-            logger.warning("[MedicalMonitor] Verifier error — failing open: %s", e)
+            logger.warning("[MedicalMonitor] Verifier error , failing open: %s", e)
             return True, None
 
-    # ── step_extractor ────────────────────────────────────────────────────────
+    #                        step_extractor 
 
     def step_extractor(self, chunk: str, generated_text: str) -> Tuple[bool, Optional[str]]:
         if not self._is_in_think_block(generated_text):
@@ -158,8 +158,8 @@ class MedicalMonitor(VerifyMonitor):
             return True, generated_text
 
         if "\n" in chunk:
-            # Count newline characters directly — vLLM streams \n as its own
-            # token so split("\n") always yields ["",""] giving 0 non-empty lines.
+            # Count newline characters directly , vLLM streams \n as its own
+            # token so split("\n") always yields ["",""] giving 0 non empty lines.
             self._line_count += chunk.count("\n")
             since = self._line_count - self._last_trigger_line
             if since >= self.line_interval:
@@ -169,9 +169,7 @@ class MedicalMonitor(VerifyMonitor):
                 return True, generated_text
 
         return False, None
-
-    # ── verify ────────────────────────────────────────────────────────────────
-
+    #                      verify FUNCTION
     async def verify(
         self,
         chunk:       str,
@@ -185,8 +183,8 @@ class MedicalMonitor(VerifyMonitor):
         # Max corrections cap
         num_prior = self._count_feedback_blocks(chunk)
         if num_prior >= self.max_corrections:
-            logger.info("[MONITOR] Max corrections (%d) reached — stopping", self.max_corrections)
-            print(f"\n  [MONITOR] Max corrections ({self.max_corrections}) reached — stopping")
+            logger.info("[MONITOR] Max corrections (%d) reached , stopping", self.max_corrections)
+            print(f"\n  [MONITOR] Max corrections ({self.max_corrections}) reached , stopping")
             if not event.is_set():
                 event_info.update({
                     "generated_text":   chunk,
@@ -205,7 +203,7 @@ class MedicalMonitor(VerifyMonitor):
             return
 
         logger.info("[MONITOR] FAIL at token_index=%d (feedback #%d)", token_index, num_prior + 1)
-        print(f"\n  [MONITOR] FAIL — injecting feedback #{num_prior + 1}")
+        print(f"\n  [MONITOR] FAIL , injecting feedback #{num_prior + 1}")
 
         feedback_text    = feedback or "Review this reasoning step before continuing."
         wrapped_feedback = f"\n\n[FEEDBACK]\n{feedback_text}\n[/FEEDBACK]\n\n"
@@ -225,7 +223,7 @@ class MedicalMonitor(VerifyMonitor):
             })
             event.set()
 
-    # ── fix ───────────────────────────────────────────────────────────────────
+    #                      fix FUNCTION
 
     async def fix(self, generated_text, event_info, fix_method=None):
         text_so_far = event_info.get("generated_text", generated_text)
