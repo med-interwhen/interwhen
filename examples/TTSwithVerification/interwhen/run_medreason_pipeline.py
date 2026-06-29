@@ -150,6 +150,7 @@ def run(args, sample):
             line_interval        = args.line_interval,
             max_corrections      = args.max_corrections,
             verification_window  = args.verification_window,
+            confidence_threshold = args.confidence_threshold,
             verifier_port        = args.verifier_port,
             verifier_model       = args.verifier_model,
             evidence_source      = args.evidence_source,
@@ -220,8 +221,12 @@ def parse_args():
     # Feedback control
     ap.add_argument("--max_corrections",       type=int, default=10,
                     help="Max feedback blocks per sample before stopping")
+    ap.add_argument("--confidence_threshold",  type=float, default=0.9,
+                    help="Min verifier confidence to act on FALSE (default: 0.9). "
+                         "Lower for stronger/same-family verifiers (e.g. 0.7). "
+                         "Keep high for weak verifiers like Meditron3 8B.")
     ap.add_argument("--line_interval",         type=int, default=15,
-                    help="Trigger verification every N non-empty lines (default: 15)")
+                    help="Trigger verification every N lines (default: 15)")
     ap.add_argument("--verification_window",   type=int, default=3,
                     help="Number of paragraphs sent per verification call")
 
