@@ -426,13 +426,3 @@ def rough_correctness_check(output_text, sample):
 **Fail-open on verifier errors.** Any exception in `_call_verifier` (connection drop, timeout, JSON parse failure) returns `(True, None)` - the sample continues without feedback. A crashed worker does not take down the multiprocessing pool.
 
 ---
-
-## Limitations and known issues
-
-**Interwhen 50-call ceiling.** `interject.py` stops recursion at 50 calls regardless of `max_corrections`. The effective maximum is `min(max_corrections, 50)`.
-
-**vLLM strips `<think>` tag.** The opening `<think>` tag is absent from the SSE stream for Qwen3 thinking models. `_is_in_think_block` infers state from the closing tag instead.
-
-**Verifier and solver on same port.** If `verifier_port == solver_port`, synchronous verifier HTTP calls compete with the solver's async streaming connection on the same vLLM server. This can cause connection drops on long generations with many feedback blocks.
-
-**PubMed rate limit without key.** Without `NCBI_API_KEY`, NCBI allows 3 requests/second. With 8 parallel workers each making PubMed calls, you will hit this limit. Either set `NCBI_API_KEY` or reduce `--n_processes`.
