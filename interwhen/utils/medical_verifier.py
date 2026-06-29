@@ -289,6 +289,11 @@ class VerifierConfig:
     verification_window:      int   = 3
     # Max feedback blocks per sample before stopping
     max_feedback_per_sample:  int   = 10
+    # Minimum verifier confidence to act on FALSE.
+    # Below this threshold, FALSE is treated as PASS.
+    # 0.9 = conservative (use with weak/misaligned verifiers like Meditron3 8B)
+    # 0.7 = reasonable (use with same-family or stronger verifiers)
+    confidence_threshold:     float = 0.9
 
 
 # ══════════════════════════════════════════════════════════════════════════════
@@ -606,7 +611,7 @@ class MedicalReasoningVerifier:
 
         if label == "FALSE":
             # Confidence gate
-            if confidence < 0.8:
+            if confidence < self.config.confidence_threshold:
                 logger.info("[VERIFIER] FALSE ignored — confidence %.2f < 0.9", confidence)
                 print(f"  [VERIFIER] INFERENCE: FALSE ignored (confidence={confidence:.2f} < 0.9)")
                 return True, None
@@ -637,7 +642,7 @@ class MedicalReasoningVerifier:
             # Directive only at very high confidence
             directive = (
                 "Re-evaluate your option selection. Your final answer may need to change."
-                if confidence >= 0.95 else None
+                if confidence >= (self.config.confidence_threshold + 0.05) else None
             )
             fb = self._format_feedback(resp, evidence_context=evidence_context, directive=directive)
             logger.info("[VERIFIER] Feedback generated:\n%s", fb)
@@ -681,7 +686,7 @@ class MedicalReasoningVerifier:
             return True, None
 
         if label == "FALSE":
-            if confidence < 0.9:
+            if confidence < self.config.confidence_threshold:
                 logger.info("[VERIFIER] CONCLUSION FALSE ignored — confidence %.2f < 0.9", confidence)
                 print(f"  [VERIFIER] CONCLUSION: FALSE ignored (confidence={confidence:.2f} < 0.9)")
                 return True, None
@@ -689,7 +694,7 @@ class MedicalReasoningVerifier:
             evidence_context = self._fetch_evidence(wrong)
             directive        = (
                 "Re-evaluate your option selection. Your final answer may need to change."
-                if confidence >= 0.95 else None
+                if confidence >= (self.config.confidence_threshold + 0.05) else None
             )
             fb = self._format_feedback(resp, evidence_context=evidence_context, directive=directive)
             logger.info("[VERIFIER] CONCLUSION FAIL:\n%s", fb)
