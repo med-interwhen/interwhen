@@ -46,9 +46,10 @@ class MedicalMonitor(VerifyMonitor):
         self,
         name:                str,
         instance:            Dict[str, Any],
-        line_interval:       int   = 15,      # trigger every N non-empty lines
+        line_interval:       int   = 15,
         max_corrections:     int   = 10,
-        verification_window: int   = 3,       # paragraphs per verification call
+        verification_window: int   = 3,
+        confidence_threshold:float = 0.9,
         verifier_port:       int   = 8001,
         verifier_model:      str   = "medverifier",
         evidence_source:     str   = "pubmed",
@@ -93,10 +94,11 @@ class MedicalMonitor(VerifyMonitor):
 
         # ── VerifierConfig ────────────────────────────────────────────────────
         config = SnomedFirstConfig(
-            run_snomed            = run_snomed and evidence_source in ("snomed", "both"),
-            evidence_source       = evidence_source,
-            verification_window   = verification_window,
+            run_snomed              = run_snomed and evidence_source in ("snomed", "both"),
+            evidence_source         = evidence_source,
+            verification_window     = verification_window,
             max_feedback_per_sample = max_corrections,
+            confidence_threshold    = confidence_threshold,
         )
 
         # ── Pre-processing (optional) ─────────────────────────────────────────
