@@ -21,6 +21,7 @@ from datasets import load_dataset
 from interwhen import stream_completion
 from interwhen.monitors.medical_monitor import MedicalMonitor
 from interwhen.utils.medical_prompts import SYSTEM_PROMPT_MEDICAL, USER_PROMPT_TEMPLATE
+from interwhen.utils.llm import init_llm_server
 
 logger    = logging.getLogger(__name__)
 tokenizer = None
@@ -75,19 +76,6 @@ class MedReasonLoader:
 # SOLVER PROMPT
 # ══════════════════════════════════════════════════════════════════════════════
 
-def init_llm_server(model_name, max_tokens=16 * 1024, port=8000):
-    return {
-        "url": f"http://localhost:{port}/v1/completions",
-        "payload": {
-            "model": model_name, "max_tokens": max_tokens,
-            "top_k": 20, "top_p": 0.95, "min_p": 0.0, "temperature": 0.6,
-            "stream": True, "logprobs": 20, "use_beam_search": False,
-            "prompt_cache": True, "seed": 42,
-        },
-        "headers": {"Content-Type": "application/json"},
-    }
-
-
 def build_prompt(sample, tok):
     case_text = sample["question"]
     if sample["options"]:
@@ -140,7 +128,7 @@ def check_correctness(output_text, sample):
 
 def run(args, sample):
     global tokenizer
-    llm_server = init_llm_server(args.solver_lm, port=args.port)
+    llm_server = init_llm_server(args.solver_lm, context_length=32 * 1024, port=args.port)
     prompt     = build_prompt(sample, tokenizer)
 
     monitors = []
@@ -168,6 +156,7 @@ def run(args, sample):
             llm_server      = llm_server,
             monitors        = tuple(monitors),
             async_execution = not args.debug,
+            tokenizer       = tokenizer,
         ))
         if monitors:
             decision_log = monitors[0].verifier.decision_log
