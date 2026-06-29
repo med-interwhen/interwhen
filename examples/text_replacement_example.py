@@ -3,26 +3,10 @@ import logging
 from transformers import AutoTokenizer
 from interwhen.monitors import SimpleTextReplaceMonitor
 from interwhen import stream_completion
+from interwhen.utils.llm import init_llm_server, get_think_tags
 
 logger = logging.getLogger(__name__)
 
-
-def init_llm_server(modelname, max_tokens=200, port=8000):
-    url = f"http://localhost:{port}/v1/completions"
-    payload = {
-        "model": modelname,
-        "max_tokens": max_tokens,
-        "temperature": 0.6,
-        "stream": True,
-        "use_beam_search": False,
-        "prompt_cache": True
-    }
-
-    headers = {"Content-Type": "application/json"}
-    return {'url': url,
-            'payload': payload,
-            'headers': headers
-            }
 
 if __name__ == "__main__":
     logging.basicConfig(
@@ -31,7 +15,8 @@ if __name__ == "__main__":
         force=True  # Override any existing configuration
     )
     model_name = "Qwen/Qwen3-30B-A3B-Thinking-2507"
-    llm_server = init_llm_server(model_name)
+    think_tags = get_think_tags(model_name)
+    llm_server = init_llm_server(model_name, context_length=200)
     tokenizer = AutoTokenizer.from_pretrained(model_name)
     # prepare the model input
     prompt = "Explain quantum computing in simple terms."
@@ -47,10 +32,11 @@ if __name__ == "__main__":
     result = asyncio.run(stream_completion(
         text,
         llm_server=llm_server,
-        monitors=(SimpleTextReplaceMonitor("IsCheck", "</think>", async_execution=True),),
+        monitors=(SimpleTextReplaceMonitor("IsCheck", think_tags['close'], async_execution=True),),
         add_delay=False,
         termination_requires_validation=False,
-        async_execution=True
+        async_execution=True,
+        tokenizer=tokenizer
     ))
     
     # Save output to file

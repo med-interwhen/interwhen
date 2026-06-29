@@ -11,12 +11,14 @@ python -m vllm.entrypoints.openai.api_server \
 
 **Generate answer enabled with given monitors**
 ```python
-llm_server = init_llm_server("Qwen/Qwen3-30B-A3B-Thinking-2507", max_tokens=32768, port=8000)
+tokenizer = AutoTokenizer.from_pretrained("Qwen/Qwen3-30B-A3B-Thinking-2507")
+llm_server = init_llm_server("Qwen/Qwen3-30B-A3B-Thinking-2507", context_length=32768, port=8000)
 stream_completion(
     prompt,
     llm_server=llm_server,
     monitors=(SimpleTextReplaceMonitor("IsCheck", "</think>", async_execution=True),),
-    async_execution=True
+    async_execution=True,
+    tokenizer=tokenizer
 )
 ```
 The above code implements a simple monitor that watches the model's output stream and replaces all occurences of "is" with "isn't". It can be replaced with your custom monitor, e.g., for checking logical correctness or domain-specific constraints.  You can run the full example 

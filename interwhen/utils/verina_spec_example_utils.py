@@ -13,7 +13,7 @@ from pathlib import Path
 from typing import List, Tuple, Optional, Dict, Any
 
 _SCRIPT_DIR = Path(__file__).parent.resolve()
-VERINA_ROOT = (_SCRIPT_DIR / "../../../../verina").resolve()
+VERINA_ROOT = (_SCRIPT_DIR / ".." / ".." / ".." / "verina").resolve()
 VERINA_DATASETS_PATH = VERINA_ROOT / "datasets" / "verina"
 LEAN_PLAYGROUND_DIR = VERINA_ROOT / "lean-playground"
 
@@ -341,14 +341,20 @@ Generate the precondition and postcondition. Use [PRECOND]...[/PRECOND] and [POS
     return system_prompt, user_prompt
 
 
-def build_full_prompt(data: BenchmarkData) -> str:
-    """Build the full prompt string for the LLM"""
+def build_full_prompt(data: BenchmarkData, tokenizer) -> str:
+    """Build the full prompt string for the LLM using the model's chat template."""
     system_prompt, user_prompt = build_spec_gen_prompt(data)
-    return f"<|im_start|>system\n{system_prompt}<|im_end|>\n<|im_start|>user\n{user_prompt}<|im_end|>\n<|im_start|>assistant\n"
+    return tokenizer.apply_chat_template(
+        [{"role": "system", "content": system_prompt},
+         {"role": "user", "content": user_prompt}],
+        tokenize=False,
+        add_generation_prompt=True,
+        enable_thinking=True,
+    )
 
 
 # Extraction Logic
-def extract_spec_from_response(response: str) -> Dict[str, str]:
+def extract_spec_from_response(response: str, open_think: str = "<think>", close_think: str = "</think>") -> Dict[str, str]:
     """Extract precondition and postcondition from response.
     
     Returns dict with keys: precond, postcond, precond_aux, postcond_aux
@@ -360,14 +366,16 @@ def extract_spec_from_response(response: str) -> Dict[str, str]:
         "postcond_aux": "",
     }
     
-    # Remove <think>...</think> block
-    cleaned = re.sub(r'<think>.*?</think>', '', response, flags=re.DOTALL | re.IGNORECASE)
+    # Remove the think block
+    open_pattern = re.escape(open_think)
+    close_pattern = re.escape(close_think)
+    cleaned = re.sub(f'{open_pattern}.*?{close_pattern}', '', response, flags=re.DOTALL | re.IGNORECASE)
     
-    # Handle partial </think>
+    # Handle partial close_think
     if not cleaned.strip() or cleaned.strip() == response.strip():
-        think_end = response.lower().rfind("</think>")
+        think_end = response.lower().rfind(close_think.lower())
         if think_end != -1:
-            cleaned = response[think_end + len("</think>"):]
+            cleaned = response[think_end + len(close_think):]
     
     # Extract PRECOND_AUX (take last match to get the most recent/corrected version)
     precond_aux_matches = re.findall(r'\[PRECOND_AUX\](.*?)\[/PRECOND_AUX\]', cleaned, re.DOTALL | re.IGNORECASE)

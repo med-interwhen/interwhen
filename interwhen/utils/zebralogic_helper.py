@@ -231,9 +231,9 @@ def get_zebralogic_dataset() -> list:
     dataset = [process_zebralogic_problem(p, ir_map) for p in dataset]
     return dataset
 
-def extract_last_json(text):
+def extract_last_json(text, close_think="</think>"):
     """Extract the last JSON object from the model's output text."""
-    json_text = text.split('</think>')[-1].strip()
+    json_text = text.split(close_think)[-1].strip()
     
     # try with md tags
     matches = re.findall(r'```json(.*?)```', json_text, re.DOTALL)
@@ -277,7 +277,7 @@ def zebra_correctness(problem: dict, candidate_solution: dict) -> Tuple[int, int
                 s += 1
                 continue
             t_soln += 1
-            if candidate_solution[house][fname] == solution[house][fname]:
+            if candidate_solution[house][fname].lower() == solution[house][fname].lower():
                 c += 1
 
     m = t - t_soln

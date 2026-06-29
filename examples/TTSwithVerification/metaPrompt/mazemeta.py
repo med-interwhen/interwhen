@@ -18,6 +18,7 @@ from transformers import AutoTokenizer
 from interwhen import stream_completion
 from interwhen.monitors import StepVerifierMazeMonitor
 from interwhen.utils.maze_verifier import parse_maze_from_prompt
+from interwhen.utils.llm import init_llm_server, get_think_tags
 
 logging.basicConfig(level=logging.INFO, format='%(message)s')
 logger = logging.getLogger(__name__)
@@ -220,26 +221,6 @@ def get_question_type_from_index(idx: int) -> str:
         return "relative_position"
 
 
-def init_llm_server(model_name, max_tokens=32768, port=8000):
-    """Initialize LLM server configuration."""
-    url = f"http://localhost:{port}/v1/completions"
-    payload = {
-        "model": model_name,
-        "max_tokens": max_tokens,
-        "top_k": 20,
-        "top_p": 0.95,
-        "min_p": 0.0,
-        "do_sample": True,
-        "temperature": 0.6,
-        "stream": True,
-        "logprobs": 20,
-        "use_beam_search": False,
-        "prompt_cache": True,
-        "seed": 42
-    }
-    headers = {"Content-Type": "application/json"}
-    return {"url": url, "payload": payload, "headers": headers}
-
 def evaluate_maze_answer(answer, options, ground_truth):
     """
     Evaluate a Maze MCQ answer and return (is_correct, extracted_answer, message).
@@ -306,6 +287,7 @@ if __name__ == "__main__":
     
     # Setup LLM server
     llm_server = init_llm_server(args.model, port=args.port)
+    think_tags = get_think_tags(args.model)
     
     # Load tokenizer for accurate token counting
     logger.info(f"Loading tokenizer for {args.model}...")
@@ -342,8 +324,13 @@ if __name__ == "__main__":
         pattern = rf'\b({keys})\.\s*([A-Za-z0-9]+)\b'
         options = dict(re.findall(pattern, user_prompt))
         
-        # Build full prompt with ChatML format
-        full_prompt = f"<|im_start|>system\n{system_prompt}<|im_end|>\n<|im_start|>user\n{user_prompt}<|im_end|>\n<|im_start|>assistant\n"
+        # Build full prompt using the model's chat template
+        full_prompt = tokenizer.apply_chat_template(
+            [{"role": "system", "content": system_prompt}, {"role": "user", "content": user_prompt}],
+            tokenize=False,
+            add_generation_prompt=True,
+            enable_thinking=True,
+        )
         
         # Parse maze from prompt
         grid, start_pos, exit_pos = parse_maze_from_prompt(user_prompt)
@@ -364,7 +351,7 @@ if __name__ == "__main__":
         # Create the monitor
         monitor = StepVerifierMazeMonitor(
             name="maze_step_verifier",
-            answer_start_token="</think>",
+            answer_start_token=think_tags['close'],
             grid=grid,
             start_pos=start_pos,
             exit_pos=exit_pos,
@@ -380,7 +367,8 @@ if __name__ == "__main__":
                 monitors=(monitor),
                 add_delay=False,
                 termination_requires_validation=False,
-                async_execution=True
+                async_execution=True,
+                tokenizer=tokenizer
             ))
         except Exception as e:
             logger.error(f"Error running example {idx}: {e}")

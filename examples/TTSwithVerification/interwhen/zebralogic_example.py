@@ -24,31 +24,12 @@ from interwhen.utils.zebralogic_helper import (
     SYSTEM_PROMPT_VANILLA,
     USER_PROMPT_TEMPLATE,
 )
+from interwhen.utils.llm import init_llm_server, get_think_tags
 
-logging.basicConfig(level=logging.ERROR, format='%(asctime)s - %(name)s - %(levelname)s - %(message)s')
 logger = logging.getLogger(__name__)
 
 # Module-level tokenizer (initialized in __main__ for multiprocessing)
 tokenizer = None
-
-def init_llm_server(model_name, max_tokens=32768, port=8000):
-    """Initialize LLM server configuration."""
-    url = f"http://localhost:{port}/v1/completions"
-    payload = {
-        "model": model_name,
-        "max_tokens": max_tokens,
-        "top_k": 20,
-        "top_p": 0.95,
-        "min_p": 0.0,
-        "temperature": 0.6,
-        "stream": True,
-        "logprobs": 20,
-        "use_beam_search": False,
-        "prompt_cache": True,
-        "seed": 42
-    }
-    headers = {"Content-Type": "application/json"}
-    return {"url": url, "payload": payload, "headers": headers}
 
 
 def build_prompt(problem, tok):
@@ -66,7 +47,8 @@ def build_prompt(problem, tok):
     prompt = tok.apply_chat_template(
         [{"role": "system", "content": system_prompt},
          {"role": "user", "content": user_prompt}],
-        tokenize=False, add_generation_prompt=True
+        tokenize=False, add_generation_prompt=True,
+        enable_thinking=True
     )
     return prompt
 
@@ -76,9 +58,10 @@ def run(args, problem):
     global tokenizer
     problem_id = problem['id']
     output_dir = args.output_dir
-    output_file = f"{output_dir}/outputs_solver.jsonl"
+    output_file = args.output_file
 
-    llm_server = init_llm_server(args.solver_lm, max_tokens=16 * 1024, port=args.port)
+    llm_server = init_llm_server(args.solver_lm, context_length=32 * 1024, port=args.port)
+    think_tags = get_think_tags(args.solver_lm)
     prompt = build_prompt(problem, tokenizer)
 
     if args.monitor:
@@ -88,6 +71,8 @@ def run(args, problem):
             llm=args.solver_lm,
             tokenizer=tokenizer,
             step_token=args.step_token,
+            open_think=think_tags['open'],
+            close_think=think_tags['close'],
             step_interval=args.step_interval,
             port=args.port,
             max_corrections=args.monitor_max_corrections,
@@ -101,10 +86,11 @@ def run(args, problem):
         monitors=tuple(monitors) if monitors else [],
         add_delay=False,
         async_execution=not args.debug,
+        tokenizer=tokenizer,
     ))
 
     # Evaluate correctness
-    candidate = extract_last_json(output_text)
+    candidate = extract_last_json(output_text, close_think=think_tags['close'])
     if candidate:
         c, s, m, t = zebra_correctness(problem, candidate)
         accuracy = c / t if t > 0 else 0
@@ -127,8 +113,9 @@ def run(args, problem):
     return output
 
 
-def _run_wrapper(args_problem):
-    return run(*args_problem)
+def run_one(task):
+    """Unpack ``(args, problem)`` and run a single ZebraLogic problem in a worker."""
+    return run(*task)
 
 
 if __name__ == "__main__":
@@ -147,6 +134,8 @@ if __name__ == "__main__":
                         help='Number of occurrences of the step token before calling the monitor')
     parser.add_argument('--n_processes', '-p', type=int, default=16,
                         help='Number of parallel processes')
+    parser.add_argument('--n_exps', type=int, default=1,
+                        help='Number of experiment runs')
     parser.add_argument('--debug', '-d', action='store_true',
                         help='Enable debug logging and single-process mode')
     parser.add_argument('--continue_from', '-c', type=str, default=None,
@@ -155,25 +144,23 @@ if __name__ == "__main__":
                         help='Extra text description for output directory')
     args = parser.parse_args()
 
-    if args.debug:
-        logging.basicConfig(
-            level=logging.INFO,
-            format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
-            force=True
-        )
-
     # Initialize tokenizer (module-level for multiprocessing)
     tokenizer = AutoTokenizer.from_pretrained(args.solver_lm)
-
-    # Load dataset
-    logger.info("Loading ZebraLogic dataset...")
-    ds = get_zebralogic_dataset()
 
     # Setup output directory
     if args.continue_from:
         output_dir = f'Outputs_TTS/zebralogic/{args.continue_from}'
     else:
-        output_dir = f'Outputs_TTS/zebralogic/{datetime.now().strftime("%Y%m%d_%H%M%S")}'
+        model_name = args.solver_lm.split('/')[-1]
+        mode = "monitor" if args.monitor else "solveronly"
+        name = f"{model_name}_{mode}"
+        if args.monitor:
+            name += f"_maxcorr{args.monitor_max_corrections}_step{args.step_interval}"
+        name += f"_nexps{args.n_exps}"
+        if args.debug:
+            name += f"_debug"
+            
+        output_dir = f'Outputs_TTS/zebralogic/{datetime.now().strftime("%Y%m%d_%H%M%S")}-{name}'
         if args.extra:
             output_dir += f'-{args.extra}'
         os.makedirs(output_dir, exist_ok=True)
@@ -182,38 +169,51 @@ if __name__ == "__main__":
 
     args.output_dir = output_dir
 
-    output_file = f"{output_dir}/outputs_solver.jsonl"
+    # Configure logging to a run.log inside the output directory
+    logfile = os.path.join(output_dir, "run.log")
+    log_level = logging.DEBUG if args.debug else logging.INFO
+    logging.basicConfig(
+        level=log_level,
+        format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
+        handlers=[logging.FileHandler(logfile, mode="w")],
+        force=True,
+    )
 
-    if args.continue_from:
-        with open(output_file, "r") as f:
-            completed_ids = {json.loads(line)['problem']['id'] for line in f}
-        ds_run = [p for p in ds if p['id'] not in completed_ids]
-        logger.warning(f"Continuing from {args.continue_from}, "
-                        f"skipping {len(completed_ids)} completed problems.")
-    else:
-        with open(output_file, "w") as f:
-            f.write("")
-        ds_run = ds
+    # Load dataset
+    logger.info("Loading ZebraLogic dataset...")
+    ds = get_zebralogic_dataset()
 
-    if not args.debug:
-        with Pool(processes=args.n_processes) as pool:
-            results = list(tqdm(
-                pool.imap_unordered(_run_wrapper, [(args, p) for p in ds_run]),
-                total=len(ds_run),
-            ))
-    else:
-        # Single-process mode for debugging
-        _run_wrapper((args, ds_run[0]))
+    for i in range(args.n_exps):
+        output_file = f"{output_dir}/outputs_solver_{i}.jsonl"
+        args.output_file = output_file
 
-    # Print summary
-    output_file = f"{output_dir}/outputs_solver.jsonl"
-    if os.path.exists(output_file):
-        total, correct = 0, 0
-        with open(output_file, "r") as f:
-            for line in f:
-                result = json.loads(line)
-                total += 1
-                if result.get('accuracy', 0) == 1.0:
-                    correct += 1
-        if total > 0:
-            print(f"\nResults: {correct}/{total} = {correct/total:.4f} accuracy")
+        if args.continue_from:
+            if os.path.exists(output_file):
+                with open(output_file, "r") as f:
+                    completed_ids = {json.loads(line)['problem']['id'] for line in f}
+            else:
+                completed_ids = set()
+            ds_run = [p for p in ds if p['id'] not in completed_ids]
+            if not ds_run:
+                print(f"Run {i}: already complete, skipping.")
+                continue
+            logger.warning(f"Run {i}: continuing from {args.continue_from}, "
+                            f"skipping {len(completed_ids)} completed problems.")
+        else:
+            with open(output_file, "w") as f:
+                f.write("")
+            ds_run = ds
+
+        print(f"\n=== Run {i+1}/{args.n_exps} ===")
+
+        if not args.debug:
+            with Pool(processes=args.n_processes) as pool:
+                results = list(tqdm(
+                    pool.imap_unordered(run_one, [(args, p) for p in ds_run]),
+                    total=len(ds_run),
+                    desc="ZebraLogic",
+                ))
+        else:
+            # Single-process mode for debugging
+            results = [run_one((args, p)) for p in tqdm(ds_run, desc="ZebraLogic")]
+
