@@ -56,7 +56,7 @@ interwhen/
 └── examples/
     └── TTSwithVerification/
         └── interwhen/
-            └── run_medreason_pipeline.py - Dataset loader, scorer, multiprocessing runner
+            └── medical_example.py - Dataset loader, scorer, multiprocessing runner
 ```
 
 ---
@@ -100,7 +100,7 @@ The verifier and solver can be the same model on the same port. Pass `--verifier
 ### Basic (with monitor, PubMed evidence)
 
 ```bash
-python run_medreason_pipeline.py \
+python medical_example.py \
     --solver_lm Qwen/Qwen3-30B \
     --port 8000 \
     --monitor \
@@ -117,7 +117,7 @@ python run_medreason_pipeline.py \
 ### Baseline (no monitor)
 
 ```bash
-python run_medreason_pipeline.py \
+python medical_example.py \
     --solver_lm Qwen/Qwen3-30B \
     --port 8000 \
     --max_samples 1000 \
@@ -127,7 +127,7 @@ python run_medreason_pipeline.py \
 ### With SNOMED + PubMed combined
 
 ```bash
-python run_medreason_pipeline.py \
+python medical_example.py \
     --solver_lm Qwen/Qwen3-30B \
     --port 8000 \
     --monitor \
@@ -143,7 +143,7 @@ python run_medreason_pipeline.py \
 ### With preprocessing (case extraction + SNOMED prefetch)
 
 ```bash
-python run_medreason_pipeline.py \
+python medical_example.py \
     --solver_lm Qwen/Qwen3-30B \
     --port 8000 \
     --monitor \
@@ -159,7 +159,7 @@ python run_medreason_pipeline.py \
 ### Continue an interrupted run
 
 ```bash
-python run_medreason_pipeline.py \
+python medical_example.py \
     --solver_lm Qwen/Qwen3-30B \
     --port 8000 \
     --monitor \
