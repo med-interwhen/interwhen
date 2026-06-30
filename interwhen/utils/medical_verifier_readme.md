@@ -213,7 +213,7 @@ class VerifierConfig:
     verification_window:      int   = 3      # paragraphs per call
     max_feedback_per_sample:  int   = 10
     confidence_threshold:     float = 0.8    # minimum confidence to act on FALSE
-                                             # directive fires at threshold + 0.05
+                                             # directive fires at threshold + 0.1
 ```
 
 ---
