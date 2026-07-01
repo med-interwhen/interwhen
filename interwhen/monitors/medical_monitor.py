@@ -196,7 +196,7 @@ class MedicalMonitor(VerifyMonitor):
                 event.set()
             return
 
-        passed, feedback = self._call_verifier(chunk)
+        passed, feedback = await asyncio.to_thread(self._call_verifier, chunk)
 
         if passed:
             logger.debug("[MONITOR] PASS at token_index=%d", token_index)
