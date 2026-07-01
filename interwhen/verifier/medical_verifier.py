@@ -15,7 +15,7 @@ from typing import Dict, List, Optional, Tuple
 import requests
 from dotenv import load_dotenv
 
-from .medical_reasoning_prompts import MedicalReasoningPromptBuilder
+from ..utils.medical_prompts import MedicalReasoningPromptBuilder
 
 logger = logging.getLogger(__name__)
 
@@ -291,8 +291,8 @@ class VerifierConfig:
     max_feedback_per_sample:  int   = 10
     # Minimum verifier confidence to act on FALSE.
     # Below this threshold, FALSE is treated as PASS.
-    # 0.8 = conservative (use with weak/misaligned verifiers like Meditron3 8B)
-    # 0.7 = reasonable (use with same-family or stronger verifiers)
+    # 0.8 = conservative 
+    # 0.7 = reasonable 
     confidence_threshold:     float = 0.8
 
 
@@ -447,7 +447,7 @@ class MedicalReasoningVerifier:
     def _options_text(options: dict) -> str:
         return "\n".join(f"{k}. {v}" for k, v in options.items()) if options else ""
 
-    #                       knowledge question detection 
+    # knowledge question detection 
 
     def _is_knowledge_question(self) -> bool:
         try:
@@ -462,7 +462,7 @@ class MedicalReasoningVerifier:
         except Exception:
             return not bool(self.compact_case.strip())
 
-    #                           SNOMED helpers 
+    # SNOMED helpers 
 
     def _build_snomed_block(self):
         if not self.snomed_cache:
@@ -484,7 +484,7 @@ class MedicalReasoningVerifier:
                     logger.info("[SNOMED] '%s' → NOT FOUND", term)
                 time.sleep(self.config.snomed_rate_limit_sleep)
 
-    #                           Evidence fetching , routes by evidence_source config 
+    # Evidence fetching , routes by evidence_source config 
 
     def _fetch_evidence(self, claim: str) -> Optional[str]:
         """
@@ -519,7 +519,7 @@ class MedicalReasoningVerifier:
 
         return "\n\n".join(results) if results else None
 
-    #                                  classify 
+    # classify 
 
     def _classify(self, content):
         logger.info("[VERIFIER] Classifying (%d chars): %s...", len(content), content[:60])
@@ -533,7 +533,7 @@ class MedicalReasoningVerifier:
         print(f"  [VERIFIER] Paragraph type: {result} | {reason}")
         return result
 
-    #                             build verification prompt 
+    # build verification prompt 
 
     def _build_verify_prompt(self, prior_context, content, allow_unknown=True):
         snomed_block = self._build_snomed_block()
@@ -552,7 +552,7 @@ class MedicalReasoningVerifier:
             allow_unknown   = allow_unknown,
         )
 
-    #                             verification methods 
+    # verification methods 
 
     def _verify_observation(self, content):
         if self._is_knowledge_question() or not self.compact_case.strip():
@@ -703,7 +703,7 @@ class MedicalReasoningVerifier:
 
         return True, None
 
-    #  feedback formatting  directive, not punishing 
+    # feedback formatting  directive, not punishing 
 
     @staticmethod
     def _format_feedback(resp, evidence_context=None, directive=None):
@@ -732,7 +732,7 @@ class MedicalReasoningVerifier:
         return "\n".join(l for l in lines if l).strip() \
                or "Review this reasoning step before continuing."
 
-    #                               logging 
+    # logging 
 
     def _log(self, para_type, label, content, feedback):
         self.decision_log.append({
@@ -742,7 +742,7 @@ class MedicalReasoningVerifier:
             "feedback":          feedback,
         })
 
-    #                           main entry point 
+    # main entry point 
 
     def verify_trace(self, text, question="", options=None):
         """

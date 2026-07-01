@@ -9,14 +9,14 @@ import logging
 from typing import Optional, Dict, Any, Tuple
 
 from .base import VerifyMonitor
-from ..utils.medical_verifier import (
+from ..verifier.medical_verifier import (
     LocalVLLMClient,
     SnomedClient,
     PubMedClient,
     VerifierConfig,
     MedicalPreprocessor,
 )
-from ..utils.medical_verifier_snomed import (
+from ..verifier.medical_verifier_snomed import (
     MedicalReasoningVerifierSnomedFirst,
     SnomedFirstConfig,
 )
@@ -72,13 +72,13 @@ class MedicalMonitor(VerifyMonitor):
         self._line_count         = 0
         self._last_trigger_line  = 0
 
-        #                verifier LLM 
+        # verifier LLM 
         self.vllm_client = LocalVLLMClient(
             base_url = f"http://localhost:{verifier_port}/v1",
             model    = verifier_model,
         )
 
-        #               SNOMED (optional) 
+        # SNOMED (optional) 
         self.snomed_client: Optional[SnomedClient] = None
         if run_snomed and evidence_source in ("snomed", "both"):
             try:
@@ -86,13 +86,13 @@ class MedicalMonitor(VerifyMonitor):
             except ValueError as e:
                 logger.warning("[MedicalMonitor] SNOMED disabled: %s", e)
 
-        #               PubMed (optional) 
+        # PubMed (optional) 
         self.pubmed_client: Optional[PubMedClient] = None
         if evidence_source in ("pubmed", "both"):
             self.pubmed_client = PubMedClient()
             logger.info("[MedicalMonitor] PubMedClient initialised")
 
-        #               VerifierConfig 
+        # VerifierConfig 
         config = SnomedFirstConfig(
             run_snomed              = run_snomed and evidence_source in ("snomed", "both"),
             evidence_source         = evidence_source,
@@ -101,7 +101,7 @@ class MedicalMonitor(VerifyMonitor):
             confidence_threshold    = confidence_threshold,
         )
 
-        #               Pre processing (optional) 
+        # Pre processing (optional) 
         question = instance.get("question", "")
         options  = instance.get("options", {})
         prep     = MedicalPreprocessor(self.vllm_client, self.snomed_client, self.pubmed_client)
@@ -118,7 +118,7 @@ class MedicalMonitor(VerifyMonitor):
         else:
             snomed_cache = {}
 
-        #                      Verifier 
+        # Verifier 
         self.verifier = MedicalReasoningVerifierSnomedFirst(
             vllm         = self.vllm_client,
             snomed       = self.snomed_client,
@@ -128,7 +128,7 @@ class MedicalMonitor(VerifyMonitor):
             snomed_cache = snomed_cache,
         )
 
-    #                         helper FUNCTIONS 
+    # helper FUNCTIONS 
 
     def _is_in_think_block(self, generated_text: str) -> bool:
         return self.think_close_tag not in generated_text
@@ -145,7 +145,10 @@ class MedicalMonitor(VerifyMonitor):
             logger.warning("[MedicalMonitor] Verifier error , failing open: %s", e)
             return True, None
 
-    #                        step_extractor 
+    # step_extractor 
+    # Extract intermediate reasoning steps from the model's <think> block.
+    # A step is captured whenever the model emits "UNKNOWN" or after a fixed
+    # number of generated reasoning lines to provide periodic checkpoints.
 
     def step_extractor(self, chunk: str, generated_text: str) -> Tuple[bool, Optional[str]]:
         if not self._is_in_think_block(generated_text):
@@ -169,7 +172,7 @@ class MedicalMonitor(VerifyMonitor):
                 return True, generated_text
 
         return False, None
-    #                      verify FUNCTION
+    # verify FUNCTION
     async def verify(
         self,
         chunk:       str,
@@ -177,6 +180,18 @@ class MedicalMonitor(VerifyMonitor):
         event:       asyncio.Event,
         event_info:  Dict[str, Any],
     ) -> None:
+        """
+        Verify the model's current reasoning checkpoint and trigger corrective
+        feedback when necessary.
+
+        This method first enforces the maximum number of allowed correction
+        attempts. If the limit has been reached, the generation state is recorded
+        in ``event_info`` with ``gave_up=True``, and the event is set to terminate
+        generation. Otherwise, the current reasoning checkpoint is evaluated by
+        the verifier.
+
+        If verification fails, the verifier's corrective feedback is wrapped in a [FEEDBACK] block and stored in event_info so that the generation loop can inject it before generation resumes. If verification succeeds, no feedback is produced. If the maximum correction limit has been reached, the function instead signals termination.
+        """
         if event.is_set():
             return
 
@@ -223,7 +238,7 @@ class MedicalMonitor(VerifyMonitor):
             })
             event.set()
 
-    #                      fix FUNCTION
+    # fix FUNCTION
 
     async def fix(self, generated_text, event_info, fix_method=None):
         text_so_far = event_info.get("generated_text", generated_text)

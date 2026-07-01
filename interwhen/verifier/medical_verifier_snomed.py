@@ -7,8 +7,8 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Dict, Optional
 
-from .medical_reasoning_prompts import MedicalReasoningPromptBuilder
-from .medical_verifier import (
+from ..utils.medical_prompts import MedicalReasoningPromptBuilder
+from medical_verifier import (
     LocalVLLMClient,
     SnomedClient,
     PubMedClient,
