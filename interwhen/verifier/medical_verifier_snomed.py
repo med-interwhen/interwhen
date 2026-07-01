@@ -8,7 +8,7 @@ from dataclasses import dataclass
 from typing import Dict, Optional
 
 from ..utils.medical_prompts import MedicalReasoningPromptBuilder
-from medical_verifier import (
+from .medical_verifier import (
     LocalVLLMClient,
     SnomedClient,
     PubMedClient,
