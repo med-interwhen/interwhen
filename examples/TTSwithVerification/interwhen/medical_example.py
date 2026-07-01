@@ -105,7 +105,7 @@ def exact_correctness_check(output_text, sample):
     return opt.group(1).strip().upper() == sample["answer"].strip().upper()
 
 
-def rough_correctness_check(output_text, sample):
+def approx_correctness_check(output_text, sample):
     m     = re.search(r"\[FINAL ANSWER\](.*?)\[/FINAL ANSWER\]", output_text, re.DOTALL)
     block = (m.group(1) if m else output_text[-600:]).lower()
     gt    = sample["options"].get(sample["answer"], "").lower()
@@ -119,7 +119,7 @@ def check_correctness(output_text, sample):
     result = exact_correctness_check(output_text, sample)
     if result is not None:
         return result
-    return rough_correctness_check(output_text, sample)
+    return approx_correctness_check(output_text, sample)
 
 
 # ══════════════════════════════════════════════════════════════════════════════

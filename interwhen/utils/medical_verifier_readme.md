@@ -409,7 +409,7 @@ def exact_correctness_check(output_text, sample):
     ...
 
 # Fallback: word overlap on last 600 chars
-def rough_correctness_check(output_text, sample):
+def approx_correctness_check(output_text, sample):
     ...
 ```
 
