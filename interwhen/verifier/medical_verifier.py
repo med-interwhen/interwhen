@@ -503,7 +503,11 @@ class MedicalReasoningVerifier:
                         question="", options_text="", reasoning_chunk=claim,
                     )
                 )
-                terms = terms_resp.get("terms", [])[:3]
+                terms = terms_resp.get("terms", [])
+                if not isinstance(terms, list):
+                    terms = []
+                terms = terms[:3]
+                if terms:
                 if isinstance(terms, list) and terms:
                     self._realtime_snomed(terms)
                     block = self._build_snomed_block()
