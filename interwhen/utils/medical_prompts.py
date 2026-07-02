@@ -25,8 +25,8 @@ class PromptConfig:
 
     UNKNOWN_WORLD_HYPO = (
         "- UNKNOWN = information is insufficient to judge medical certainty; "
-        " if you have even a slight doubt about answer , return UNKNOWN . "
-        "'evidence' describing what additional information would resolve the uncertainty."
+        "if you have even a slight doubt about the answer, return UNKNOWN. "
+        "Include an 'evidence' field describing what additional information would resolve the uncertainty."
     )
     UNKNOWN_TRACE_HYPO = (
         "- UNKNOWN = insufficient information in the reasoning trace; "
