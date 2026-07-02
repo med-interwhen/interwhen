@@ -424,7 +424,7 @@ class MedicalReasoningVerifier:
 
         parts         = re.split(r"\[FEEDBACK\].*?\[/FEEDBACK\]", think_text, flags=re.DOTALL)
         since_last_fb = parts[-1]
-        prior_fb      = "".join(parts[:-1]).strip()
+        prior_fb      = "\n\n".join(p.strip() for p in parts[:-1] if p.strip()).strip()
 
         paragraphs = [p.strip() for p in since_last_fb.split("\n\n") if p.strip()]
 
