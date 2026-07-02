@@ -7,7 +7,7 @@ Built on top of the interwhen framework (Microsoft).
 
 ## What it does
 
-A solver LLM (e.g. Qwen3-30B) generates a chain-of-thought answer to a medical MCQ. A separate verifier LLM monitors the reasoning in real time, triggering every 15 non-empty lines. When the verifier finds a problem, it injects a `[FEEDBACK]` block into the stream. The solver reads the feedback and continues, potentially revising its answer. External evidence (PubMed abstracts or SNOMED CT definitions) is fetched to ground the feedback.
+A solver LLM (e.g. Qwen3-30B) generates a chain-of-thought answer to a medical MCQ. A separate verifier LLM monitors the reasoning in real time, triggering every 15 newline characters. When the verifier finds a problem, it injects a `[FEEDBACK]` block into the stream. The solver reads the feedback and continues, potentially revising its answer. External evidence (PubMed abstracts or SNOMED CT definitions) is fetched to ground the feedback.
 
 ```
 Solver LLM (streaming)
@@ -15,7 +15,7 @@ Solver LLM (streaming)
        │ tokens
        ▼
    Monitor
-   count non-empty lines
+   count newline characters
        │
        │ every 15 lines  (or on UNKNOWN)
        ▼
