@@ -83,7 +83,7 @@ class MedicalMonitor(VerifyMonitor):
 
         # SNOMED (optional) 
         self.snomed_client: Optional[SnomedClient] = None
-        if run_snomed and evidence_source in ("snomed", "both"):
+        if run_snomed:
             try:
                 self.snomed_client = SnomedClient()
             except ValueError as e:
