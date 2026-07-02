@@ -175,8 +175,12 @@ def run(args, sample):
         "exact_matched": exact_matched is not None,
         "decision_log":  decision_log,
     }
-    with open(f"{args.output_dir}/outputs.jsonl", "a") as f:
-        f.write(json.dumps(result, default=str) + "\n")
+    line = json.dumps(result, default=str) + "\n"
+    fd = os.open(f"{args.output_dir}/outputs.jsonl", os.O_APPEND | os.O_CREAT | os.O_WRONLY)
+    try:
+        os.write(fd, line.encode("utf-8"))
+    finally:
+        os.close(fd)
     return result
 
 

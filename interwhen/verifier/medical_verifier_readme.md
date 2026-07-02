@@ -44,19 +44,17 @@ Solver LLM (streaming)
 interwhen/
 ├── interwhen/
 │   ├── monitors/
-│   │   └── medical_monitor.py           - VerifyMonitor subclass; trigger + inject logic
-│   └── utils/
-│       ├── medical_prompts.py           - Solver system prompt + user prompt template
-│       ├── medical_reasoning_prompts.py - All verifier LLM prompt builders
-│       ├── medical_verifier.py          - Core verifier: LocalVLLMClient, SnomedClient,
-│       │                                  PubMedClient, VerifierConfig, CompactState,
-│       │                                  MedicalPreprocessor, MedicalReasoningVerifier
-│       └── medical_verifier_snomed.py   - MedicalReasoningVerifierSnomedFirst subclass
-│                                          (real-time SNOMED enrichment per paragraph)
+│   │   └── medical_monitor.py
+│   ├── utils/
+│   │   └── medical_prompts.py
+│   └── verifier/
+│       ├── medical_verifier_readme.md
+│       ├── medical_verifier.py
+│       └── medical_verifier_snomed.py
 └── examples/
     └── TTSwithVerification/
         └── interwhen/
-            └── medical_example.py - Dataset loader, scorer, multiprocessing runner
+            └── medical_example.py
 ```
 
 ---

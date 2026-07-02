@@ -351,14 +351,14 @@ class MedicalPreprocessor:
         prompt = MedicalReasoningPromptBuilder.build_case_extraction_prompt(case_text=question)
         resp   = self.vllm.call(prompt)
         if "error" in resp:
-            return question[:2000]
+            return ""
         return json.dumps(resp, indent=2)
 
     def prefetch_snomed(self, question, options):
         if self.snomed is None:
             return {}
         opts_text = "\n".join(f"{k}. {v}" for k, v in options.items())
-        prompt    = MedicalReasoningPromptBuilder.build_snomed_term_extraction_prompt(
+        prompt = MedicalReasoningPromptBuilder.build_snomed_term_extraction_prompt(
             question="", options_text="", reasoning_chunk=opts_text,
         )
         resp  = self.vllm.call(prompt)
@@ -565,6 +565,9 @@ class MedicalReasoningVerifier:
             compact_case=self.compact_case, paragraph=content,
         )
         resp     = self.vllm.call(prompt)
+        if "error" in resp:
+            logger.warning("[VERIFIER] OBSERVATION verifier error, skipping grounding: %s", resp.get("error"))
+            return True, None
         grounded = resp.get("grounded", True)
 
         if grounded:

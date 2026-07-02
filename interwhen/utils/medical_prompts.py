@@ -144,7 +144,6 @@ Output format (if issues found):
 """
 
     @classmethod
-    @classmethod
     def build_inference_verification_prompt(
         cls,
         *,
