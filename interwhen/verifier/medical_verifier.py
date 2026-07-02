@@ -490,7 +490,6 @@ class MedicalReasoningVerifier:
         """
         Fetch external evidence for a claim based on config.evidence_source.
         No claim-type routing LLM call — source is purely the config param.
-        SNOMED is skipped for comparative/ranking claims (regex guard only).
         """
         if not claim or self.config.evidence_source == "none":
             return None
@@ -599,7 +598,12 @@ class MedicalReasoningVerifier:
         logger.info("[VERIFIER] Prompt sent (%d chars)", len(prompt))
         resp   = self.vllm.call(prompt)
         label      = str(resp.get("label", "ERROR")).upper()
-        confidence = float(resp.get("confidence", 1.0))
+        raw_conf   = resp.get("confidence", 1.0)
+        try:
+            confidence = float(raw_conf)
+        except (TypeError, ValueError):
+            logger.warning("[VERIFIER] Invalid confidence value %r; defaulting to 0.0", raw_conf)
+            confidence = 0.0
         logger.info("[VERIFIER] INFERENCE verdict: %s (confidence=%.2f)", label, confidence)
         print(f"  [VERIFIER] INFERENCE verdict: {label} (confidence={confidence:.2f})")
 
@@ -644,7 +648,7 @@ class MedicalReasoningVerifier:
 
             # Directive only at very high confidence
             directive = (
-                "Re evaluate your option selection. Your final answer may need to change."
+                "Re-evaluate your option selection. Your final answer may need to change."
                 if confidence >= (self.config.confidence_threshold + 0.1) else None
             )
             fb = self._format_feedback(resp, evidence_context=evidence_context, directive=directive)
@@ -679,7 +683,12 @@ class MedicalReasoningVerifier:
         prompt = self._build_verify_prompt(prior_context, content, allow_unknown=False)
         resp   = self.vllm.call(prompt)
         label      = str(resp.get("label", "ERROR")).upper()
-        confidence = float(resp.get("confidence", 1.0))
+        raw_conf   = resp.get("confidence", 1.0)
+        try:
+            confidence = float(raw_conf)
+        except (TypeError, ValueError):
+            logger.warning("[VERIFIER] Invalid confidence value %r; defaulting to 0.0", raw_conf)
+            confidence = 0.0
         logger.info("[VERIFIER] CONCLUSION verdict: %s (confidence=%.2f)", label, confidence)
         print(f"  [VERIFIER] CONCLUSION verdict: {label} (confidence={confidence:.2f})")
 
