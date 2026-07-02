@@ -175,12 +175,6 @@ def run(args, sample):
         "exact_matched": exact_matched is not None,
         "decision_log":  decision_log,
     }
-    line = json.dumps(result, default=str) + "\n"
-    fd = os.open(f"{args.output_dir}/outputs.jsonl", os.O_APPEND | os.O_CREAT | os.O_WRONLY)
-    try:
-        os.write(fd, line.encode("utf-8"))
-    finally:
-        os.close(fd)
     return result
 
 
@@ -283,13 +277,24 @@ def main():
     print(f"  prefetch_snomed:     {args.prefetch_snomed}\n")
 
     if not args.debug:
-        with Pool(processes=args.n_processes) as pool:
-            results = list(tqdm(
+        results = []
+
+        with Pool(processes=args.n_processes) as pool, \
+            open(output_file, "a") as f:
+
+            for result in tqdm(
                 pool.imap_unordered(_run_wrapper, [(args, s) for s in samples]),
                 total=len(samples),
-            ))
+            ):
+                results.append(result)
+                f.write(json.dumps(result, default=str) + "\n")
+                f.flush()
     else:
         results = [run(args, samples[0])] if samples else []
+
+        if results:
+            with open(output_file, "a") as f:
+                f.write(json.dumps(results[0], default=str) + "\n")
 
     scored = [r["correct"] for r in results if r.get("correct") is not None]
     exact  = [r["exact_matched"] for r in results]

@@ -36,7 +36,7 @@ class MedicalMonitor(VerifyMonitor):
     ----------
     evidence_source     : "pubmed" | "snomed" | "both" | "none"
     max_corrections     : feedback blocks before stopping (default 10)
-    paragraph_interval  : trigger every N paragraphs (default 1 = every \\n\\n)
+    line_interval       : trigger verification every N lines (default 15)
     verification_window : paragraphs sent per verification call (default 3)
     preprocess_case     : run case extraction LLM call before generation
     prefetch_snomed     : batch-fetch SNOMED for option terms before generation
@@ -68,6 +68,9 @@ class MedicalMonitor(VerifyMonitor):
         self.think_open_tag      = think_open_tag
         self.think_close_tag     = think_close_tag
 
+        # Prevent concurrent verify() tasks from calling into the shared verifier/state.
+        self._verify_lock         = asyncio.Lock()
+        
         # line trigger counter , non empty lines seen since last trigger
         self._line_count         = 0
         self._last_trigger_line  = 0
@@ -207,11 +210,15 @@ class MedicalMonitor(VerifyMonitor):
                     "correction_index": token_index,
                     "gave_up":          True,
                     "decision_log":     self.verifier.decision_log,
+                    "phase":            "final_answer_correct",
                 })
                 event.set()
             return
 
-        passed, feedback = await asyncio.to_thread(self._call_verifier, chunk)
+        async with self._verify_lock:
+            if event.is_set():
+                return
+            passed, feedback = await asyncio.to_thread(self._call_verifier, chunk)
 
         if passed:
             logger.debug("[MONITOR] PASS at token_index=%d", token_index)

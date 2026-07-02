@@ -279,7 +279,7 @@ class VerifierConfig:
     snomed_rate_limit_sleep:  float = 0.3
     # Evidence source: "snomed", "pubmed", "both", "none"
     # "pubmed" — PubMed abstracts for all claims
-    # "snomed" — SNOMED definitions (skipped for comparative claims)
+    # "snomed" — SNOMED definitions for extracted clinical terms
     # "both"   — SNOMED for terminology + PubMed for evidence
     # "none"   — no external evidence lookup
     evidence_source:          str   = "pubmed"
@@ -597,13 +597,12 @@ class MedicalReasoningVerifier:
         prompt = self._build_verify_prompt(prior_context, content, allow_unknown=self.config.allow_unknown)
         logger.info("[VERIFIER] Prompt sent (%d chars)", len(prompt))
         resp   = self.vllm.call(prompt)
-        label      = str(resp.get("label", "ERROR")).upper()
-        raw_conf   = resp.get("confidence", 1.0)
+        label = str(resp.get("label", "ERROR")).upper()
+        confidence_raw = resp.get("confidence", 1.0)
         try:
-            confidence = float(raw_conf)
+            confidence = float(confidence_raw)
         except (TypeError, ValueError):
-            logger.warning("[VERIFIER] Invalid confidence value %r; defaulting to 0.0", raw_conf)
-            confidence = 0.0
+            confidence = 1.0
         logger.info("[VERIFIER] INFERENCE verdict: %s (confidence=%.2f)", label, confidence)
         print(f"  [VERIFIER] INFERENCE verdict: {label} (confidence={confidence:.2f})")
 
@@ -682,13 +681,12 @@ class MedicalReasoningVerifier:
         print(f"  [VERIFIER] CONCLUSION: verifying ({len(content)} chars)")
         prompt = self._build_verify_prompt(prior_context, content, allow_unknown=False)
         resp   = self.vllm.call(prompt)
-        label      = str(resp.get("label", "ERROR")).upper()
-        raw_conf   = resp.get("confidence", 1.0)
+        label = str(resp.get("label", "ERROR")).upper()
+        confidence_raw = resp.get("confidence", 1.0)
         try:
-            confidence = float(raw_conf)
+            confidence = float(confidence_raw)
         except (TypeError, ValueError):
-            logger.warning("[VERIFIER] Invalid confidence value %r; defaulting to 0.0", raw_conf)
-            confidence = 0.0
+            confidence = 1.0
         logger.info("[VERIFIER] CONCLUSION verdict: %s (confidence=%.2f)", label, confidence)
         print(f"  [VERIFIER] CONCLUSION verdict: {label} (confidence={confidence:.2f})")
 

@@ -5,16 +5,9 @@ medical_verifier_snomed.py
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Dict, Optional
 
 from ..utils.medical_prompts import MedicalReasoningPromptBuilder
-from .medical_verifier import (
-    LocalVLLMClient,
-    SnomedClient,
-    PubMedClient,
-    VerifierConfig,
-    MedicalReasoningVerifier,
-)
+from .medical_verifier import VerifierConfig, MedicalReasoningVerifier
 
 
 @dataclass
