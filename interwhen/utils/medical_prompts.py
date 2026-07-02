@@ -31,7 +31,7 @@ class PromptConfig:
     UNKNOWN_TRACE_HYPO = (
         "- UNKNOWN = insufficient information in the reasoning trace; "
         "if you have doubt about the answer, return UNKNOWN. "
-        "Include an 'evidence' field describing what additional information would resolve the   uncertainty."
+        "Include an 'evidence' field describing what additional information would resolve the uncertainty."
     )
 
 
